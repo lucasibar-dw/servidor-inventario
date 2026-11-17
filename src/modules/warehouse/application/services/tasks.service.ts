@@ -1,6 +1,6 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, OnModuleInit, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Between, MoreThanOrEqual, LessThanOrEqual } from 'typeorm';
+import { Repository, Between, MoreThanOrEqual, LessThanOrEqual, DataSource } from 'typeorm';
 import { TaskPersistenceEntity } from '../../infrastructure/persistence/entities/task.entity';
 import { TaskTypeCatalogEntity } from '../../infrastructure/persistence/entities/task-type-catalog.entity';
 import { PositionEntity, DepotEntity } from '../../infrastructure/persistence/entities/depot.entity';
@@ -42,7 +42,9 @@ export interface CompleteTaskDto {
 }
 
 @Injectable()
-export class TasksService {
+export class TasksService implements OnModuleInit {
+    private readonly logger = new Logger(TasksService.name);
+
     constructor(
         @InjectRepository(TaskPersistenceEntity)
         private readonly taskRepo: Repository<TaskPersistenceEntity>,
@@ -55,7 +57,57 @@ export class TasksService {
         @InjectRepository(EmployeeEntity)
         private readonly employeeRepo: Repository<EmployeeEntity>,
         private readonly movimientosService: MovimientosService,
+        private readonly dataSource: DataSource,
     ) {}
+
+    async onModuleInit() {
+        try {
+            await this.dataSource.query(`
+                CREATE TABLE IF NOT EXISTS "task_type_catalog" (
+                    "id" uuid NOT NULL DEFAULT gen_random_uuid(),
+                    "codigo" character varying(50) NOT NULL,
+                    "nombre" character varying(150) NOT NULL,
+                    "descripcion" text,
+                    "depositoId" uuid,
+                    "tipoGeneral" character varying(50) NOT NULL DEFAULT 'EXTRAORDINARY',
+                    "tiempoEstimadoMinutos" integer NOT NULL DEFAULT 30,
+                    "activo" boolean NOT NULL DEFAULT true,
+                    "createdAt" TIMESTAMP NOT NULL DEFAULT now(),
+                    "updatedAt" TIMESTAMP NOT NULL DEFAULT now(),
+                    CONSTRAINT "PK_task_type_catalog_id" PRIMARY KEY ("id"),
+                    CONSTRAINT "UQ_task_type_catalog_codigo" UNIQUE ("codigo")
+                );
+
+                ALTER TABLE "tasks" ADD COLUMN IF NOT EXISTS "depositoId" uuid;
+                ALTER TABLE "tasks" ADD COLUMN IF NOT EXISTS "taskTypeId" uuid;
+                ALTER TABLE "tasks" ADD COLUMN IF NOT EXISTS "title" character varying(200);
+                ALTER TABLE "tasks" ADD COLUMN IF NOT EXISTS "description" text;
+                ALTER TABLE "tasks" ADD COLUMN IF NOT EXISTS "customerOrDestination" character varying(150);
+                ALTER TABLE "tasks" ADD COLUMN IF NOT EXISTS "dueDate" TIMESTAMP;
+                ALTER TABLE "tasks" ADD COLUMN IF NOT EXISTS "originSector" character varying(50) DEFAULT 'DEPOSITO';
+                ALTER TABLE "tasks" ADD COLUMN IF NOT EXISTS "controlType" character varying(50);
+                ALTER TABLE "tasks" ADD COLUMN IF NOT EXISTS "controlFilter" character varying(150);
+                ALTER TABLE "tasks" ADD COLUMN IF NOT EXISTS "startedAt" TIMESTAMP;
+                ALTER TABLE "tasks" ADD COLUMN IF NOT EXISTS "tiempoEstimadoMinutos" integer DEFAULT 30;
+                ALTER TABLE "tasks" ADD COLUMN IF NOT EXISTS "tiempoRealMinutos" integer;
+                ALTER TABLE "tasks" ADD COLUMN IF NOT EXISTS "assignedEmployeeId" uuid;
+                ALTER TABLE "tasks" ADD COLUMN IF NOT EXISTS "completedByEmployeeId" uuid;
+                ALTER TABLE "tasks" ADD COLUMN IF NOT EXISTS "resultStatus" character varying(50);
+                ALTER TABLE "tasks" ADD COLUMN IF NOT EXISTS "resultNotes" text;
+
+                ALTER TABLE "tasks" ALTER COLUMN "itemId" DROP NOT NULL;
+                ALTER TABLE "tasks" ALTER COLUMN "sourcePositionId" DROP NOT NULL;
+                ALTER TABLE "tasks" ALTER COLUMN "targetPositionId" DROP NOT NULL;
+                ALTER TABLE "tasks" ALTER COLUMN "qty" DROP NOT NULL;
+
+                ALTER TABLE "employees" ADD COLUMN IF NOT EXISTS "depositoId" uuid;
+                ALTER TABLE "employees" ADD COLUMN IF NOT EXISTS "subSector" character varying(100);
+            `);
+            this.logger.log('Tabla tasks y task_type_catalog aseguradas con todas sus columnas.');
+        } catch (err: any) {
+            this.logger.warn(`Could not ensure tasks table structure: ${err?.message}`);
+        }
+    }
 
     async findAll(query?: {
         depositoId?: string;

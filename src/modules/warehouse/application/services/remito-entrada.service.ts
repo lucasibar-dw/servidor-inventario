@@ -230,20 +230,25 @@ export class RemitoEntradaService {
 
                     // Lógica de Tareas (Putaway)
                     if (pos.codigo.toUpperCase().includes('ENTRADA')) {
-                        const targetPosId = await this.tasksService.suggestPosition(itemId, line.categoria || 'GENERAL');
-                        if (targetPosId) {
-                            const task = manager.create(TaskPersistenceEntity, {
-                                id: randomUUID(),
-                                type: TaskType.PUTAWAY,
-                                itemId,
-                                batchId: lotId,
-                                sourcePositionId: effectivePosicionId,
-                                targetPositionId: targetPosId,
-                                qty: Number(line.qtySecundaria || line.qtyPrincipal),
-                                status: TaskStatus.PENDING,
-                                priority: 2,
-                            });
-                            await manager.save(TaskPersistenceEntity, task);
+                        try {
+                            const targetPosId = await this.tasksService.suggestPosition(itemId, line.categoria || 'GENERAL');
+                            if (targetPosId) {
+                                const task = manager.create(TaskPersistenceEntity, {
+                                    id: randomUUID(),
+                                    type: TaskType.PUTAWAY,
+                                    itemId,
+                                    batchId: lotId,
+                                    sourcePositionId: effectivePosicionId,
+                                    targetPositionId: targetPosId,
+                                    qty: Number(line.qtySecundaria || line.qtyPrincipal),
+                                    status: TaskStatus.PENDING,
+                                    priority: 2,
+                                });
+                                await manager.save(TaskPersistenceEntity, task);
+                            }
+                        } catch (taskErr: any) {
+                            // Si la tabla de tareas aún no tiene todas las columnas en la BD, no bloquear el guardado del remito
+                            console.warn('No se pudo registrar la tarea automática de Putaway:', taskErr?.message);
                         }
                     }
                 }
