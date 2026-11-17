@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource, EntityManager } from 'typeorm';
+import { randomUUID } from 'crypto';
 import { DocumentoEntity, TipoDocumento, DocumentoStatus } from '../../infrastructure/persistence/entities/documento.entity';
 import { MovimientoEntity, TipoMovimiento, MovimientoStatus } from '../../infrastructure/persistence/entities/movimiento.entity';
 import { BatchEntity, BatchQualityStatus } from '../../infrastructure/persistence/entities/batch.entity';
@@ -177,6 +178,11 @@ export class RemitoEntradaService {
                 }
                 const lotId = batch.id;
                 let effectivePosicionId = line.posicionId;
+                if (effectivePosicionId && effectivePosicionId.toUpperCase() === 'ENTRADA') {
+                    // Si vino la palabra ENTRADA en lugar de un UUID, buscar o crear la posición ENTRADA del depósito
+                    effectivePosicionId = undefined;
+                }
+
                 if (!effectivePosicionId && effectiveDepotId) {
                     // Buscar posicion ENTRADA de forma case-insensitive
                     const allPos = await manager.find(PositionEntity, { where: { depositoId: effectiveDepotId } });
@@ -187,12 +193,11 @@ export class RemitoEntradaService {
                     } else {
                         // Crear posición de ENTRADA si no existe por alguna razón
                         const newPos = manager.create(PositionEntity, {
-                            id: require('uuid').v4(),
+                            id: randomUUID(),
                             depositoId: effectiveDepotId,
                             codigo: 'ENTRADA',
                             categoria: 'INPUT',
                             meta: { system: true, description: 'Auto-generada en remito' }
-
                         });
                         await manager.save(PositionEntity, newPos);
                         effectivePosicionId = newPos.id;
@@ -228,7 +233,7 @@ export class RemitoEntradaService {
                         const targetPosId = await this.tasksService.suggestPosition(itemId, line.categoria || 'GENERAL');
                         if (targetPosId) {
                             const task = manager.create(TaskPersistenceEntity, {
-                                id: require('uuid').v4(),
+                                id: randomUUID(),
                                 type: TaskType.PUTAWAY,
                                 itemId,
                                 batchId: lotId,
