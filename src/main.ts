@@ -13,11 +13,12 @@ async function bootstrap() {
       
       const allowedOrigins = [
         'http://localhost:5173',
-        'https://inventariofront.vercel.app'
+        'https://inventariofront.vercel.app',
+        'https://inventario-sigma-self.vercel.app'
       ];
       
       // Also allow Vercel deployment preview URLs (e.g., https://inventariofront-six.vercel.app)
-      const isVercelPreview = origin.startsWith('https://inventariofront-') && origin.endsWith('.vercel.app');
+      const isVercelPreview = (origin.startsWith('https://inventariofront-') || origin.startsWith('https://inventario-')) && origin.endsWith('.vercel.app');
       
       if (allowedOrigins.includes(origin) || isVercelPreview) {
         callback(null, true);
