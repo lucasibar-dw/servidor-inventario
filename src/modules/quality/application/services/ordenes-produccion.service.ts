@@ -250,6 +250,121 @@ export interface HojaPickingItem {
     hasUnreviewedArticles: boolean;
 }
 
+export type EstadoMatchArticuloPlanilla =
+    | 'OK'
+    | 'SIN_MATCH'
+    | 'SIN_ESTRUCTURA'
+    | 'ESTRUCTURA_INCOMPLETA';
+
+export interface HiladoPlanillaItem {
+    id: string;
+    itemId: string | null;
+    codigoHilado: string;
+    codigoComponenteBom: string;
+    descripcionHilado: string;
+    categoria: string;
+    tipoMaterialCono: 'ALGODON' | 'NYLON' | 'LYCRA' | 'GOMA' | 'OTRO';
+    kilosPedido: number;
+    kilosManana: number;
+    kilosNoche: number;
+    pesoConoKg: number;
+    pesoConoEsEstimado: boolean;
+    motivoPesoCono: string;
+    conos: number;
+    stockTotalKg: number;
+    stockPickingKg: number;
+    stockReservaKg: number;
+    posicionesPicking: string[];
+    sinEquivalenciaItem: boolean;
+    esSustituto: boolean;
+    sustitutoMotivo: string | null;
+    maquinasCount: number;
+    maquinas: number[];
+    articulosDetalle: {
+        codigoArticulo: string;
+        codigoSusana: string;
+        descripcion: string;
+        maquinas: number[];
+        horasTejido: number;
+        docenas: number;
+        kilos: number;
+        ritmoEsEstimado: boolean;
+    }[];
+}
+
+export interface CambioArticuloRef {
+    codigoSusana: string;
+    codigoCatalogo: string | null;
+    articuloId: string | null;
+    descripcion: string;
+    talle: string;
+    color: string;
+    estadoMatch: EstadoMatchArticuloPlanilla;
+}
+
+export interface CambioPlanillaItem {
+    id: string;
+    fecha: string;
+    maquina: number;
+    area: string;
+    turno: 'M' | 'N' | string;
+    tipoMaquina: string;
+    articuloSaliente: CambioArticuloRef;
+    articuloEntrante: CambioArticuloRef;
+    hora: string;
+    horaEsDefault: boolean;
+    motivoHora: string;
+    tipoCambio: string;
+    tiposCambioArray: string[];
+    tipoEsInferidoSinMatch: boolean;
+    duracionEsperadaMin: number;
+    duracionTexto: string;
+    duracionEsEstimada: boolean;
+    motivoDuracion: string;
+    muestrasHistorialBd: number;
+    horasTejidoSaliente: number;
+    horasTejidoEntranteDia: number;
+}
+
+export interface PendientePlanillaItem {
+    key: string;
+    codigoSusana: string;
+    talle: string;
+    color: string;
+    descripcionPdf: string;
+    maquinas: number[];
+    areas: string[];
+    estado: 'SIN_MATCH' | 'SIN_ESTRUCTURA' | 'ESTRUCTURA_INCOMPLETA';
+    mensajeEstado: string;
+    articuloMatcheado: {
+        id: string;
+        codigo: string;
+        descripcion: string;
+        etapa: string;
+    } | null;
+    componentesSinItem: string[];
+    candidatosSugeridos: {
+        id: string;
+        codigo: string;
+        descripcion: string;
+        modelo: string | null;
+        talle: string | null;
+        variante: string | null;
+        etapa: string | null;
+        tieneEstructura: boolean;
+    }[];
+}
+
+export interface ContextoPlantaProduccion {
+    plantaId: string | null;
+    plantaNombre: string;
+    sector: string;
+    plantasDisponibles: { id: string; nombre: string; ubicacion?: string | null }[];
+    sectoresDisponibles: string[];
+    ritmoDocenasPorHoraDefault: number;
+    ritmoEsEstimadoGlobal: boolean;
+}
+
 export interface ProduccionParseResult {
     planillaId?: string;
     creadoEn?: string;
@@ -257,12 +372,18 @@ export interface ProduccionParseResult {
     turnos: string[];
     areas: string[];
     archivosProcesados: { filename: string; entriesCount: number; machinesFound: number[] }[];
+    contextoPlanta?: ContextoPlantaProduccion;
+    listadoHilado?: HiladoPlanillaItem[];
+    listadoCambios?: CambioPlanillaItem[];
+    pendientesCompletar?: PendientePlanillaItem[];
     resumenAlertas: {
         totalArticulosDistintos: number;
         totalMaquinasAsignadas: number;
         articulosChequeados: number;
         articulosNoRevisados: number;
         articulosNoEncontrados: number;
+        articulosSinEstructura?: number;
+        articulosEstructuraIncompleta?: number;
         alertaGlobal: boolean;
         mensajeAlerta: string;
         // Nuevos KPIs de Producción, Picking y Compras
@@ -270,6 +391,7 @@ export interface ProduccionParseResult {
         totalParesEstimados?: number;
         totalDocenasEstimadas?: number;
         totalKilosHiladoDia?: number;
+        totalConosDia?: number;
         totalCambiosProgramados08AM?: number;
         totalItemsReponerPicking?: number;
         totalItemsCriticosComprar?: number;
@@ -376,6 +498,43 @@ export class OrdenesProduccionService implements OnModuleInit {
             ALTER TABLE IF EXISTS "articulo_estructuras" ADD COLUMN IF NOT EXISTS "origen" varchar(255);
             ALTER TABLE IF EXISTS "articulo_estructuras" ADD COLUMN IF NOT EXISTS "estadoRevision" varchar(255);
             ALTER TABLE IF EXISTS "articulo_estructuras" ADD COLUMN IF NOT EXISTS "descripcionInsumo" varchar(255);
+
+            CREATE TABLE IF NOT EXISTS articulo_alias_susana (
+                codigo_susana VARCHAR(180) PRIMARY KEY,
+                articulo_id UUID REFERENCES articulos(id) ON DELETE CASCADE,
+                codigo_articulo VARCHAR(120) NOT NULL,
+                creado_en TIMESTAMP DEFAULT NOW(),
+                actualizado_en TIMESTAMP DEFAULT NOW()
+            );
+
+            CREATE TABLE IF NOT EXISTS planilla_cambios_horarios (
+                clave_cambio VARCHAR(180) PRIMARY KEY,
+                fecha VARCHAR(30) NOT NULL,
+                maquina INT NOT NULL,
+                turno VARCHAR(10) NOT NULL,
+                hora VARCHAR(10) NOT NULL,
+                actualizado_en TIMESTAMP DEFAULT NOW()
+            );
+
+            INSERT INTO articulo_item_equivalencias ("articuloId", "codigoArticulo", "itemId", "codigoItem", "ordenPrioridad", "esPrincipal", "factorConversion", activo)
+            SELECT a.id, a.codigo, i.id, i."codigoInterno", 2, false, 1.0, true
+            FROM articulos a
+            JOIN items i ON i."codigoInterno" IN ('L20150RZZ-blanca', 'L20150EU-blanca')
+            WHERE a.codigo = 'L20150BLANCO'
+              AND NOT EXISTS (
+                  SELECT 1 FROM articulo_item_equivalencias e
+                  WHERE e."codigoArticulo" = 'L20150BLANCO' AND e."itemId" = i.id
+              );
+
+            INSERT INTO articulo_item_equivalencias ("articuloId", "codigoArticulo", "itemId", "codigoItem", "ordenPrioridad", "esPrincipal", "factorConversion", activo)
+            SELECT a.id, a.codigo, i.id, i."codigoInterno", 3, false, 1.0, true
+            FROM articulos a
+            JOIN items i ON i."codigoInterno" IN ('L20150RZZ-negra')
+            WHERE a.codigo = 'L20150NEGRO'
+              AND NOT EXISTS (
+                  SELECT 1 FROM articulo_item_equivalencias e
+                  WHERE e."codigoArticulo" = 'L20150NEGRO' AND e."itemId" = i.id
+              );
         `);
 
         // Seed default article positions if empty
@@ -477,18 +636,37 @@ export class OrdenesProduccionService implements OnModuleInit {
     /**
      * Obtiene la última planilla de producción diaria guardada sin necesidad de volver a subir los PDFs
      */
-    async getUltimaPlanilla(): Promise<ProduccionParseResult | null> {
+    async getUltimaPlanilla(plantaId?: string, sector?: string): Promise<ProduccionParseResult | null> {
         await this.ensureSchemaAndSeed();
         const rows = await this.dataSource.query(`
-            SELECT id, fecha, creado_en, datos_completos
+            SELECT id, fecha, archivos, creado_en, datos_completos
             FROM planillas_produccion_diaria
             ORDER BY actualizado_en DESC, creado_en DESC
             LIMIT 1
         `);
         if (!rows || rows.length === 0) return null;
-        const result: ProduccionParseResult = rows[0].datos_completos;
-        result.planillaId = rows[0].id;
-        result.creadoEn = rows[0].creado_en;
+        const row = rows[0];
+        if (row.datos_completos && Array.isArray(row.datos_completos.maquinas) && row.datos_completos.maquinas.length > 0) {
+            const rawMaquinas: ParsedMachineEntry[] = row.datos_completos.maquinas.map((m: any) => ({
+                machine: m.machine,
+                articleRaw: m.articleRaw,
+                descRaw: m.descRaw,
+                colorRaw: m.colorRaw,
+                page: m.page || 1,
+                file: m.file || '',
+                date: m.date || '',
+                shift: m.shift || 'M',
+                area: m.area || '',
+                talle: m.talle || '',
+            }));
+            return this.procesarPlanillaConEntradas(rawMaquinas, row.archivos || [], row.id, {
+                plantaId,
+                sector,
+            });
+        }
+        const result: ProduccionParseResult = row.datos_completos;
+        result.planillaId = row.id;
+        result.creadoEn = row.creado_en;
         return result;
     }
 
@@ -502,16 +680,35 @@ export class OrdenesProduccionService implements OnModuleInit {
         `);
     }
 
-    async getPlanillaById(id: string): Promise<ProduccionParseResult | null> {
+    async getPlanillaById(id: string, plantaId?: string, sector?: string): Promise<ProduccionParseResult | null> {
         await this.ensureSchemaAndSeed();
         const rows = await this.dataSource.query(
-            `SELECT id, fecha, creado_en, datos_completos FROM planillas_produccion_diaria WHERE id = $1`,
+            `SELECT id, fecha, archivos, creado_en, datos_completos FROM planillas_produccion_diaria WHERE id = $1`,
             [id],
         );
         if (!rows || rows.length === 0) return null;
-        const result: ProduccionParseResult = rows[0].datos_completos;
-        result.planillaId = rows[0].id;
-        result.creadoEn = rows[0].creado_en;
+        const row = rows[0];
+        if (row.datos_completos && Array.isArray(row.datos_completos.maquinas) && row.datos_completos.maquinas.length > 0) {
+            const rawMaquinas: ParsedMachineEntry[] = row.datos_completos.maquinas.map((m: any) => ({
+                machine: m.machine,
+                articleRaw: m.articleRaw,
+                descRaw: m.descRaw,
+                colorRaw: m.colorRaw,
+                page: m.page || 1,
+                file: m.file || '',
+                date: m.date || '',
+                shift: m.shift || 'M',
+                area: m.area || '',
+                talle: m.talle || '',
+            }));
+            return this.procesarPlanillaConEntradas(rawMaquinas, row.archivos || [], row.id, {
+                plantaId,
+                sector,
+            });
+        }
+        const result: ProduccionParseResult = row.datos_completos;
+        result.planillaId = row.id;
+        result.creadoEn = row.creado_en;
         return result;
     }
 
@@ -528,12 +725,157 @@ export class OrdenesProduccionService implements OnModuleInit {
     }
 
     /**
-     * Parsea los PDFs de producción diaria de Susana, cruza 100% los artículos de TEJIDO,
-     * calcula horas reales de tejido (12h por turno y cambios a las 08:00 AM leyendo machine_changes en Mantenimiento),
-     * explota los hilados por docena (24 medias), cruza con Picking vs Stock General y guarda la planilla.
+     * Vincula un código de Susana (PDF) con un artículo de la BD, persiste el alias permanentemente
+     * y devuelve la planilla recalculada al instante.
+     */
+    async vincularCodigoSusana(dto: {
+        codigoSusana: string;
+        articuloId: string;
+        planillaId?: string;
+        plantaId?: string;
+        sector?: string;
+    }): Promise<ProduccionParseResult | null> {
+        await this.ensureSchemaAndSeed();
+        const susiClean = (dto.codigoSusana || '').trim().toUpperCase().replace(/\s+/g, ' ');
+        if (!susiClean || !dto.articuloId) {
+            throw new Error('Debes indicar el código de Susana y el artículo de destino.');
+        }
+
+        const artRows = await this.dataSource.query(
+            `SELECT id, codigo, "codigoSusi" FROM articulos WHERE id = $1 LIMIT 1`,
+            [dto.articuloId],
+        );
+        if (!artRows || artRows.length === 0) {
+            throw new Error('El artículo seleccionado no existe en la base de datos.');
+        }
+        const targetArt = artRows[0];
+
+        await this.dataSource.query(
+            `
+            INSERT INTO articulo_alias_susana (codigo_susana, articulo_id, codigo_articulo, creado_en, actualizado_en)
+            VALUES ($1, $2, $3, NOW(), NOW())
+            ON CONFLICT (codigo_susana) DO UPDATE
+            SET articulo_id = EXCLUDED.articulo_id,
+                codigo_articulo = EXCLUDED.codigo_articulo,
+                actualizado_en = NOW()
+            `,
+            [susiClean, targetArt.id, targetArt.codigo],
+        );
+
+        if (!targetArt.codigoSusi) {
+            await this.dataSource.query(
+                `UPDATE articulos SET "codigoSusi" = $1, "updatedAt" = NOW() WHERE id = $2`,
+                [susiClean, targetArt.id],
+            );
+        }
+
+        return this.recalcularPlanilla(dto.planillaId, dto.plantaId, dto.sector);
+    }
+
+    /**
+     * Guarda un horario personalizado para un cambio de máquina y recalcula la planilla
+     */
+    async actualizarHoraCambio(dto: {
+        fecha: string;
+        maquina: number;
+        turno: string;
+        hora: string;
+        planillaId?: string;
+        plantaId?: string;
+        sector?: string;
+    }): Promise<ProduccionParseResult | null> {
+        await this.ensureSchemaAndSeed();
+        const fechaClean = (dto.fecha || 'HOY').trim();
+        const maquinaNum = Number(dto.maquina);
+        const turnoClean = (dto.turno || 'M').trim().toUpperCase();
+        const horaClean = (dto.hora || '07:00').trim();
+        const clave = `${fechaClean}__${maquinaNum}__${turnoClean}`;
+
+        await this.dataSource.query(
+            `
+            INSERT INTO planilla_cambios_horarios (clave_cambio, fecha, maquina, turno, hora, actualizado_en)
+            VALUES ($1, $2, $3, $4, $5, NOW())
+            ON CONFLICT (clave_cambio) DO UPDATE
+            SET hora = EXCLUDED.hora,
+                actualizado_en = NOW()
+            `,
+            [clave, fechaClean, maquinaNum, turnoClean, horaClean],
+        );
+
+        return this.recalcularPlanilla(dto.planillaId, dto.plantaId, dto.sector);
+    }
+
+    /**
+     * Lista artículos del catálogo para el selector de matcheo rápido, indicando cuáles ya tienen estructura
+     */
+    async getCatalogoParaMatcheo(search?: string, etapa?: string): Promise<any[]> {
+        await this.ensureSchemaAndSeed();
+        const q = (search || '').trim();
+        const params: any[] = [];
+        let where = `WHERE (a.activo = true OR a.activo IS NULL)`;
+
+        if (etapa && etapa !== 'TODOS') {
+            params.push(etapa.trim().toUpperCase());
+            where += ` AND a.etapa = $${params.length}`;
+        }
+
+        if (q) {
+            params.push(`%${q}%`);
+            where += ` AND (a.codigo ILIKE $${params.length} OR a.descripcion ILIKE $${params.length} OR COALESCE(a.modelo, '') ILIKE $${params.length} OR COALESCE(a."codigoSusi", '') ILIKE $${params.length})`;
+        }
+
+        const rows = await this.dataSource.query(
+            `
+            SELECT
+                a.id,
+                a.codigo,
+                a.descripcion,
+                a.marca,
+                a.modelo,
+                a.talle,
+                a.variante,
+                a.etapa,
+                a."codigoSusi",
+                COUNT(e.id)::int AS "componentesCount"
+            FROM articulos a
+            LEFT JOIN articulo_estructuras e
+                ON UPPER(TRIM(e."codigoPadre")) = UPPER(TRIM(a.codigo))
+                AND (e.activo = true OR e.activo IS NULL)
+            ${where}
+            GROUP BY a.id, a.codigo, a.descripcion, a.marca, a.modelo, a.talle, a.variante, a.etapa, a."codigoSusi"
+            ORDER BY
+                CASE WHEN a.etapa = 'TEJIDO' THEN 0 ELSE 1 END,
+                CASE WHEN COUNT(e.id) > 0 THEN 0 ELSE 1 END,
+                a.codigo ASC
+            LIMIT 80
+            `,
+            params,
+        );
+
+        return rows.map((r: any) => ({
+            id: r.id,
+            codigo: r.codigo,
+            descripcion: r.descripcion,
+            marca: r.marca,
+            modelo: r.modelo,
+            talle: r.talle,
+            variante: r.variante,
+            etapa: r.etapa,
+            codigoSusi: r.codigoSusi,
+            componentesCount: Number(r.componentesCount) || 0,
+            tieneEstructura: (Number(r.componentesCount) || 0) > 0,
+        }));
+    }
+
+    /**
+     * Parsea los PDFs de producción diaria de Susana, cruza los artículos de TEJIDO,
+     * calcula horas reales de tejido sobre las 24h del día restando el tiempo de cambio según machine_changes,
+     * explota los hilados a razón de 0,8 docenas/hora base, calcula conos según peso por tipo de material
+     * y cruza con Stock y Pasillo de Picking del depósito hilado (excluyendo pilar).
      */
     async parseOrdenesFromBuffers(
         files: { buffer: Buffer; originalname: string }[],
+        options?: { plantaId?: string; sector?: string; fechaFiltro?: string },
     ): Promise<ProduccionParseResult> {
         await this.ensureSchemaAndSeed();
 
@@ -554,15 +896,18 @@ export class OrdenesProduccionService implements OnModuleInit {
             }
         }
 
-        return this.procesarPlanillaConEntradas(allRawEntries, archivosProcesados);
+        return this.procesarPlanillaConEntradas(allRawEntries, archivosProcesados, undefined, options);
     }
 
     /**
-     * Recalcula la planilla de producción diaria (explosión de hilados y stock)
-     * utilizando las recetas técnicas actuales de articulo_estructuras, equivalencias de articulo_item_equivalencias
-     * y saldos de stock vigentes, sin necesidad de re-subir los PDFs de Susana.
+     * Recalcula la planilla de producción diaria utilizando las recetas técnicas actuales de articulo_estructuras,
+     * alias de Susana y saldos de stock vigentes.
      */
-    async recalcularPlanilla(id?: string): Promise<ProduccionParseResult | null> {
+    async recalcularPlanilla(
+        id?: string,
+        plantaId?: string,
+        sector?: string,
+    ): Promise<ProduccionParseResult | null> {
         await this.ensureSchemaAndSeed();
         let row: any = null;
         if (id) {
@@ -596,22 +941,146 @@ export class OrdenesProduccionService implements OnModuleInit {
         }));
 
         const archivos = row.archivos || [];
-        return this.procesarPlanillaConEntradas(rawMaquinas, archivos, row.id);
+        return this.procesarPlanillaConEntradas(rawMaquinas, archivos, row.id, { plantaId, sector });
     }
 
     /**
-     * Ejecuta el cálculo completo de tiempos, horas reales de tejido (12h por turno y cambios a las 08:00 AM),
-     * explosión de hilados por docena, cruce con Stock General/Picking y persistencia de la planilla.
+     * Determina el peso de cono según el ítem en BD o las reglas por tipo de hilado:
+     * Algodón = 1,0 kg | Nylon = 0,7 kg | Lycra = 3,5 kg | Goma = 0,5 kg
+     */
+    private resolvePesoCono(
+        item: ItemEntity | null | undefined,
+        codigoComponente?: string,
+        descripcion?: string,
+    ): {
+        pesoConoKg: number;
+        esEstimado: boolean;
+        tipoMaterialCono: 'ALGODON' | 'NYLON' | 'LYCRA' | 'GOMA' | 'OTRO';
+        motivoPesoCono: string;
+    } {
+        const dbWeight = Number(item?.pesoConoKg);
+        const cat = (item?.category?.nombre || '').trim().toUpperCase();
+        const code = (item?.codigoInterno || codigoComponente || '').trim().toUpperCase();
+        const desc = (item?.descripcion || descripcion || '').trim().toUpperCase();
+
+        let tipo: 'ALGODON' | 'NYLON' | 'LYCRA' | 'GOMA' | 'OTRO' = 'OTRO';
+        let defaultKg = 1.0;
+
+        if (
+            cat.includes('GOMA') ||
+            code.startsWith('G140') ||
+            code.startsWith('140/') ||
+            code.startsWith('L140') ||
+            desc.includes('GOMA')
+        ) {
+            tipo = 'GOMA';
+            defaultKg = 0.5;
+        } else if (
+            cat.includes('LYCRA') ||
+            code.startsWith('L20') ||
+            code.startsWith('L40') ||
+            code.startsWith('L70') ||
+            desc.includes('LYCRA')
+        ) {
+            tipo = 'LYCRA';
+            defaultKg = 3.5;
+        } else if (
+            cat.includes('NYLON') ||
+            cat.includes('POLIESTER') ||
+            cat.includes('POLYSOFT') ||
+            code.startsWith('N70') ||
+            code.startsWith('N100') ||
+            code.startsWith('N40') ||
+            code.startsWith('P78') ||
+            desc.includes('NYLON') ||
+            desc.includes('POLIESTER')
+        ) {
+            tipo = 'NYLON';
+            defaultKg = 0.7;
+        } else if (
+            cat.includes('ALGODON') ||
+            code.startsWith('A16') ||
+            code.startsWith('A24') ||
+            code.startsWith('A20') ||
+            code.startsWith('A8') ||
+            code.startsWith('A30') ||
+            desc.includes('ALGODON')
+        ) {
+            tipo = 'ALGODON';
+            defaultKg = 1.0;
+        }
+
+        if (!isNaN(dbWeight) && dbWeight > 0) {
+            return {
+                pesoConoKg: dbWeight,
+                esEstimado: false,
+                tipoMaterialCono: tipo,
+                motivoPesoCono: `Peso de cono cargado en la ficha del ítem en BD (${dbWeight} kg)`,
+            };
+        }
+
+        const labelTipo =
+            tipo === 'ALGODON'
+                ? 'Algodón (1,0 kg por cono)'
+                : tipo === 'NYLON'
+                  ? 'Nylon / Poliéster (0,7 kg por cono)'
+                  : tipo === 'LYCRA'
+                    ? 'Lycra (3,5 kg por cono)'
+                    : tipo === 'GOMA'
+                      ? 'Goma (0,5 kg por cono)'
+                      : 'Estándar (1,0 kg por cono)';
+
+        return {
+            pesoConoKg: defaultKg,
+            esEstimado: true,
+            tipoMaterialCono: tipo,
+            motivoPesoCono: `Dato estimado por tipo de hilado: ${labelTipo}. Cuando el ítem tenga su peso en la BD se tomará automáticamente.`,
+        };
+    }
+
+    /**
+     * Convierte "HH:MM" en horas transcurridas desde el inicio del turno (06:00 para M, 18:00 para N)
+     */
+    private computeHoursBeforeChange(horaStr: string, shift: string): number {
+        const match = (horaStr || '').trim().match(/^(\d{1,2}):(\d{2})$/);
+        if (!match) return shift === 'N' ? 11 : 1;
+        const hh = Math.min(23, Math.max(0, parseInt(match[1], 10)));
+        const mm = Math.min(59, Math.max(0, parseInt(match[2], 10)));
+        const decimalHour = hh + mm / 60;
+
+        if (shift === 'N') {
+            // Turno Noche: 18:00 a 06:00
+            let diff = decimalHour >= 18 ? decimalHour - 18 : decimalHour + 6;
+            if (diff <= 0 || diff >= 12) diff = 11; // Si dice 06:00 en turno N, teje 11h antes del cambio final
+            return Math.round(diff * 100) / 100;
+        } else {
+            // Turno Mañana: 06:00 a 18:00 (default 07:00 => 1h)
+            let diff = decimalHour - 6;
+            if (diff <= 0) diff = 1;
+            if (diff > 11.5) diff = 11.5;
+            return Math.round(diff * 100) / 100;
+        }
+    }
+
+    /**
+     * Ejecuta el cálculo completo de la Planilla del Día:
+     * - Filtra máquinas por Planta (Der Will por defecto) y Sector (TEJEDURIA por defecto)
+     * - Calcula los cambios del día, su tipo y su duración esperada desde machine_changes
+     * - Resta el tiempo del cambio a las 24 horas del día y calcula docenas a razón de 0,8 doc/h base
+     * - Explota los hilados, calcula conos según peso de cono (1kg / 0,7kg / 3,5kg / 0,5kg)
+     * - Cruza con Stock y Pasillo de Picking del depósito hilado (excluyendo depósito pilar)
      */
     async procesarPlanillaConEntradas(
-        allRawEntries: ParsedMachineEntry[],
+        allRawEntriesInput: ParsedMachineEntry[],
         archivosProcesados: any[] = [],
         existingId?: string,
+        options?: { plantaId?: string; sector?: string; fechaFiltro?: string },
     ): Promise<ProduccionParseResult> {
         await this.ensureSchemaAndSeed();
 
-        // 1. Lectura en bloque (SOLO LECTURA) de Catálogo de Artículos, BOM, Tiempos, Equivalencias, Máquinas y Stock
+        // 1. Lectura en bloque desde la BD
         const [
+            rawPlants,
             rawArticulos,
             rawEstructuras,
             rawMachineTimes,
@@ -621,19 +1090,22 @@ export class OrdenesProduccionService implements OnModuleInit {
             allItems,
             rawPositions,
             rawStockBalances,
+            rawCustomAliases,
+            rawHoraOverrides,
         ] = await Promise.all([
+            this.dataSource.query(`SELECT id, name, location FROM plants ORDER BY name ASC`),
             this.dataSource.query(`
                 SELECT id, codigo, descripcion, "unidadMedida", marca, modelo, talle, variante, etapa, familia, "codigoSusi", estado
                 FROM articulos
                 WHERE activo = true OR activo IS NULL
             `),
             this.dataSource.query(`
-                SELECT "codigoPadre", "codigoComponente", cantidad
+                SELECT "codigoPadre", "codigoComponente", cantidad, "descripcionInsumo"
                 FROM articulo_estructuras
                 WHERE activo = true OR activo IS NULL
             `),
             this.dataSource.query(`
-                SELECT amt."articuloId", amt."machineTypeId", amt."cycleTimeSeconds", amt.preferida
+                SELECT amt."articuloId", amt."machineTypeId", amt."cycleTimeSeconds", amt.preferida, amt."timeSource", amt.status
                 FROM articulo_machine_types amt
             `),
             this.dataSource.query(`
@@ -643,8 +1115,10 @@ export class OrdenesProduccionService implements OnModuleInit {
                 ORDER BY "esPrincipal" DESC, "ordenPrioridad" ASC
             `),
             this.dataSource.query(`
-                SELECT m.id, m.number, m."codigoInterno", m.nombre, m.status, m."typeId", mt.name AS "machineTypeName"
+                SELECT m.id, m.number, m."codigoInterno", m.nombre, m.status, m."plantId", p.name AS "plantName",
+                       m."typeId", mt.name AS "machineTypeName", mt.category AS "machineCategory"
                 FROM machines m
+                LEFT JOIN plants p ON p.id = m."plantId"
                 LEFT JOIN machine_types mt ON mt.id = m."typeId"
             `),
             this.dataSource.query(`
@@ -660,13 +1134,65 @@ export class OrdenesProduccionService implements OnModuleInit {
                 WHERE p.activo = true
             `),
             this.dataSource.query(`
-                SELECT sb."itemId", sb."posicionId", sb."depositoId", sb."qtyPrincipal", p.codigo AS "posicionCodigo", p.categoria AS "posicionCategoria", b."lotNumber" AS "partida"
+                SELECT sb."itemId", sb."posicionId", sb."depositoId", sb."qtyPrincipal",
+                       p.codigo AS "posicionCodigo", p.categoria AS "posicionCategoria",
+                       d.nombre AS "depositoNombre", b."lotNumber" AS "partida"
                 FROM stock_balance sb
                 LEFT JOIN positions p ON p.id = sb."posicionId"
+                LEFT JOIN depots d ON d.id = sb."depositoId"
                 LEFT JOIN batches b ON b.id = sb."lotId"
                 WHERE sb."qtyPrincipal" > 0
             `),
+            this.dataSource.query(`SELECT codigo_susana, articulo_id, codigo_articulo FROM articulo_alias_susana`),
+            this.dataSource.query(`SELECT clave_cambio, hora FROM planilla_cambios_horarios`),
         ]);
+
+        // Resolver Planta (por defecto Der Will) y Sector (por defecto TEJEDURIA)
+        const plantasDisponibles = (rawPlants || []).map((p: any) => ({
+            id: p.id,
+            nombre: p.name,
+            ubicacion: p.location,
+        }));
+        const derWillPlant =
+            plantasDisponibles.find((p: any) => (p.nombre || '').toUpperCase().includes('DER WILL')) ||
+            plantasDisponibles[0] || { id: null, nombre: 'Der Will' };
+
+        const selectedPlant =
+            (options?.plantaId &&
+                plantasDisponibles.find(
+                    (p: any) => p.id === options.plantaId || (p.nombre || '').toUpperCase() === options.plantaId!.toUpperCase(),
+                )) ||
+            derWillPlant;
+
+        const sectoresSet = new Set<string>(['TEJEDURIA']);
+        for (const m of rawMachines) {
+            if (m.machineCategory) sectoresSet.add(String(m.machineCategory).toUpperCase());
+        }
+        const selectedSector = (options?.sector || 'TEJEDURIA').trim().toUpperCase();
+
+        // Clonar entradas para no mutar referencias previas
+        const allRawEntries: ParsedMachineEntry[] = allRawEntriesInput
+            .filter((e) => !options?.fechaFiltro || e.date === options.fechaFiltro)
+            .map((e) => ({ ...e }));
+
+        // Indexar horarios personalizados de cambios
+        const horaOverrideMap = new Map<string, string>();
+        for (const ho of rawHoraOverrides || []) {
+            if (ho.clave_cambio && ho.hora) {
+                horaOverrideMap.set(ho.clave_cambio, ho.hora);
+            }
+        }
+
+        // Indexar alias guardados en BD por el usuario
+        const customAliasMap = new Map<string, string>();
+        for (const ca of rawCustomAliases || []) {
+            if (ca.codigo_susana && ca.codigo_articulo) {
+                customAliasMap.set(
+                    String(ca.codigo_susana).trim().toUpperCase().replace(/\s+/g, ' '),
+                    String(ca.codigo_articulo).trim().toUpperCase(),
+                );
+            }
+        }
 
         // Indexar Items de Inventario (Hilados/Insumos)
         const itemById = new Map<string, ItemEntity>();
@@ -678,12 +1204,15 @@ export class OrdenesProduccionService implements OnModuleInit {
             }
         }
 
-        // Indexar Posiciones de Picking por Categoría Predilecta (Hilado / Insumos)
+        // Indexar Posiciones de Picking del depósito hilado (excluyendo depósito pilar)
         const pickingPositionsByCategory = new Map<string, string[]>();
         const allPickingPositions: string[] = [];
         for (const pos of rawPositions) {
+            const depName = (pos.depositoNombre || '').trim().toLowerCase();
+            if (depName === 'pilar') continue; // Excluir depósito Pilar
+
             const catPos = (pos.categoria || '').trim().toUpperCase();
-            if (catPos === 'PICKING') {
+            if (catPos === 'PICKING' && (depName === 'hilado' || !depName)) {
                 allPickingPositions.push(pos.codigo);
                 for (const pref of [pos.categoriaPrincipal, pos.categoriaSecundaria]) {
                     if (pref) {
@@ -696,18 +1225,23 @@ export class OrdenesProduccionService implements OnModuleInit {
             }
         }
 
-        // Indexar Stock en Picking vs Stock en Reserva y Lotes por ItemId
+        // Indexar Stock en Pasillo de Picking vs Stock en Depósito (excluyendo depósito 'pilar')
+        // Nota confirmada: Cuarentena se cuenta dentro del stock del depósito hilado.
         const stockByItemId = new Map<
             string,
             {
                 pickingKg: number;
                 reservaKg: number;
+                totalDepositoKg: number;
                 pickingPositions: Set<string>;
                 reservaPositions: Set<string>;
                 lots: { posicionCodigo: string; posicionCategoria: string; partida: string | null; qtyPrincipal: number }[];
             }
         >();
         for (const sb of rawStockBalances) {
+            const depName = (sb.depositoNombre || '').trim().toLowerCase();
+            if (depName === 'pilar') continue; // Excluir depósito Pilar (no tenemos fácil acceso a esa mercadería)
+
             const itemId = sb.itemId;
             const qty = Number(sb.qtyPrincipal) || 0;
             if (!itemId || qty <= 0) continue;
@@ -715,6 +1249,7 @@ export class OrdenesProduccionService implements OnModuleInit {
                 stockByItemId.set(itemId, {
                     pickingKg: 0,
                     reservaKg: 0,
+                    totalDepositoKg: 0,
                     pickingPositions: new Set(),
                     reservaPositions: new Set(),
                     lots: [],
@@ -722,6 +1257,7 @@ export class OrdenesProduccionService implements OnModuleInit {
             }
             const rec = stockByItemId.get(itemId)!;
             const isPicking = (sb.posicionCategoria || '').trim().toUpperCase() === 'PICKING';
+            rec.totalDepositoKg += qty;
             if (isPicking) {
                 rec.pickingKg += qty;
                 if (sb.posicionCodigo) rec.pickingPositions.add(sb.posicionCodigo);
@@ -737,7 +1273,6 @@ export class OrdenesProduccionService implements OnModuleInit {
             });
         }
 
-        // Ordenar los lotes por partida correlativa FIFO (partida más chica primero)
         for (const rec of stockByItemId.values()) {
             rec.lots.sort((a, b) => {
                 const numA = parseInt(String(a.partida || '').replace(/\D/g, ''), 10);
@@ -772,14 +1307,12 @@ export class OrdenesProduccionService implements OnModuleInit {
             list.sort((a, b) => (b.esPrincipal ? 1 : 0) - (a.esPrincipal ? 1 : 0) || a.ordenPrioridad - b.ordenPrioridad);
         }
 
-        // Cascada dinámica de consumo de hilados por stock:
-        // Prioridad 1 -> si no tiene stock, pasar a Prioridad 2 -> si no, Prioridad 3...
         const resolveBestItemForComp = (compCode: string) => {
             const list = equivListByComp.get(compCode);
             if (list && list.length > 0) {
                 const principal = list[0];
                 const stockPrincipal = stockByItemId.get(principal.item.id);
-                const totalPrincipal = (stockPrincipal?.pickingKg || 0) + (stockPrincipal?.reservaKg || 0);
+                const totalPrincipal = stockPrincipal?.totalDepositoKg || 0;
 
                 if (totalPrincipal > 0) {
                     return {
@@ -790,11 +1323,10 @@ export class OrdenesProduccionService implements OnModuleInit {
                     };
                 }
 
-                // Si la principal no tiene stock, evaluar sustitutos en orden
                 for (let i = 1; i < list.length; i++) {
                     const cand = list[i];
                     const stockCand = stockByItemId.get(cand.item.id);
-                    const totalCand = (stockCand?.pickingKg || 0) + (stockCand?.reservaKg || 0);
+                    const totalCand = stockCand?.totalDepositoKg || 0;
                     if (totalCand > 0) {
                         return {
                             item: cand.item,
@@ -805,7 +1337,6 @@ export class OrdenesProduccionService implements OnModuleInit {
                     }
                 }
 
-                // Ninguna tiene stock: proponer la principal para compra
                 return {
                     item: principal.item,
                     esSustituto: false,
@@ -823,34 +1354,60 @@ export class OrdenesProduccionService implements OnModuleInit {
             };
         };
 
-        // Indexar Máquinas de Mantenimiento por número (SOLO LECTURA)
+        // Indexar Máquinas filtrando por Planta seleccionada (Der Will) y Sector (TEJEDURIA)
         const machineByNumber = new Map<
             number,
-            { id: string; number: number; typeId: string; machineTypeName: string; status: string }
+            { id: string; number: number; typeId: string; machineTypeName: string; status: string; plantName: string }
         >();
         for (const m of rawMachines) {
             const num = Number(m.number);
-            if (!isNaN(num) && num > 0) {
+            if (isNaN(num) || num <= 0) continue;
+
+            const matchesPlant =
+                !selectedPlant?.id ||
+                m.plantId === selectedPlant.id ||
+                (m.plantName || '').toUpperCase() === (selectedPlant.nombre || '').toUpperCase();
+            const matchesSector =
+                !selectedSector ||
+                !m.machineCategory ||
+                String(m.machineCategory).toUpperCase() === selectedSector;
+
+            if (matchesPlant && matchesSector) {
                 machineByNumber.set(num, {
                     id: m.id,
                     number: num,
                     typeId: m.typeId,
                     machineTypeName: m.machineTypeName || 'Lonati Tejeduría',
-                    status: m.status,
+                    status: m.status || 'ACTIVA',
+                    plantName: m.plantName || selectedPlant?.nombre || 'Der Will',
+                });
+            } else if (!machineByNumber.has(num)) {
+                // Fallback solo si no existiera en la planta seleccionada
+                machineByNumber.set(num, {
+                    id: m.id,
+                    number: num,
+                    typeId: m.typeId,
+                    machineTypeName: m.machineTypeName || 'Lonati Tejeduría',
+                    status: m.status || 'ACTIVA',
+                    plantName: m.plantName || 'Der Will',
                 });
             }
         }
 
-        // Calcular promedios históricos de cambios de artículo/talle/color desde machine_changes (SOLO LECTURA)
+        // Calcular promedios históricos de cambios desde machine_changes en la BD
         const changeDurationsByMachineAndType = new Map<string, number[]>();
         const changeDurationsByType = new Map<string, number[]>();
         for (const mc of rawMachineChanges) {
             const start = new Date(mc.startTime).getTime();
             const end = new Date(mc.endTime).getTime();
             const diffHours = (end - start) / (1000 * 3600);
-            if (diffHours <= 0 || diffHours > 10) continue; // ignorar outliers fuera de turno
+            if (diffHours <= 0.03 || diffHours > 8) continue; // ignorar outliers fuera de rango
             const typesArr: string[] = Array.isArray(mc.changeTypes) ? mc.changeTypes : [];
-            const typeKey = typesArr.map((t) => String(t).toUpperCase()).sort().join('+') || 'ARTICULO';
+            const cleanTypes = typesArr
+                .map((t) => String(t).trim().toUpperCase())
+                .filter((t) => ['ARTICULO', 'TALLE', 'COLOR'].includes(t))
+                .sort();
+            const typeKey = cleanTypes.join('+') || 'ARTICULO';
 
             const mKey = `${mc.machineId}__${typeKey}`;
             if (!changeDurationsByMachineAndType.has(mKey)) changeDurationsByMachineAndType.set(mKey, []);
@@ -860,17 +1417,28 @@ export class OrdenesProduccionService implements OnModuleInit {
             changeDurationsByType.get(typeKey)!.push(diffHours);
         }
 
-        // Indexar Tiempos por Artículo y MachineType
-        const timesByArticuloId = new Map<string, { byType: Map<string, number>; preferred: number }>();
+        // Ritmo base de planta confirmado: 0,8 docenas por hora = 19,2 medias/hora = 187,5 segundos por media
+        const DEFAULT_DOCENAS_POR_HORA = 0.8;
+        const DEFAULT_CYCLE_SEC_PLANTA = 3600 / (DEFAULT_DOCENAS_POR_HORA * 24); // 187.5 seg/media
+
+        // Indexar Tiempos por Artículo y MachineType (solo si son medidos reales y distintos del placeholder 95)
+        const timesByArticuloId = new Map<string, { byType: Map<string, number>; preferred: number; isMeasured: boolean }>();
         for (const amt of rawMachineTimes) {
             const sec = Number(amt.cycleTimeSeconds);
             if (!sec || sec <= 0) continue;
+            const isPlaceholder95 = Math.abs(sec - 95) < 0.1 && (amt.status === 'ESTIMADO' || amt.timeSource === 'ESTIMADO');
+            const effectiveSec = isPlaceholder95 ? DEFAULT_CYCLE_SEC_PLANTA : sec;
+            const isMeasured = !isPlaceholder95 && amt.status !== 'ESTIMADO';
+
             if (!timesByArticuloId.has(amt.articuloId)) {
-                timesByArticuloId.set(amt.articuloId, { byType: new Map(), preferred: sec });
+                timesByArticuloId.set(amt.articuloId, { byType: new Map(), preferred: effectiveSec, isMeasured });
             }
             const tObj = timesByArticuloId.get(amt.articuloId)!;
-            tObj.byType.set(amt.machineTypeId, sec);
-            if (amt.preferida) tObj.preferred = sec;
+            tObj.byType.set(amt.machineTypeId, effectiveSec);
+            if (amt.preferida) {
+                tObj.preferred = effectiveSec;
+                tObj.isMeasured = isMeasured;
+            }
         }
 
         // Indexar BOM (articulo_estructuras) por codigoPadre
@@ -917,10 +1485,13 @@ export class OrdenesProduccionService implements OnModuleInit {
                 };
             });
 
+            const hasCompleteBom = bomRefs.length > 0 && bomRefs.every((b) => !!b.item);
             const estadoRev =
-                raw.estado === 'CHEQUEADO' || raw.estadoRevision === 'VERDE' || bomRefs.length > 0
+                bomRefs.length > 0 && hasCompleteBom
                     ? EstadoRevisionArticulo.CHEQUEADO
-                    : EstadoRevisionArticulo.PENDIENTE;
+                    : bomRefs.length > 0
+                      ? EstadoRevisionArticulo.INCOMPLETO
+                      : EstadoRevisionArticulo.PENDIENTE;
 
             const catalogItem: ArticuloCatalogItem = {
                 id: raw.id,
@@ -936,7 +1507,7 @@ export class OrdenesProduccionService implements OnModuleInit {
                 estado: raw.estado,
                 estadoRevision: estadoRev,
                 cycleTimeByMachineType: timeInfo?.byType || new Map(),
-                defaultCycleTimeSeconds: timeInfo?.preferred || 95,
+                defaultCycleTimeSeconds: timeInfo?.preferred || DEFAULT_CYCLE_SEC_PLANTA,
                 bomRefs,
             };
 
@@ -944,7 +1515,10 @@ export class OrdenesProduccionService implements OnModuleInit {
 
             if (raw.codigoSusi) {
                 const susiKey = raw.codigoSusi.trim().toUpperCase().replace(/\s+/g, ' ');
-                artBySusi.set(susiKey, catalogItem);
+                // Priorizar TEJIDO si hubiera más de uno
+                if (!artBySusi.has(susiKey) || raw.etapa === 'TEJIDO') {
+                    artBySusi.set(susiKey, catalogItem);
+                }
             }
 
             const parts = codeUpper.split('_');
@@ -963,7 +1537,6 @@ export class OrdenesProduccionService implements OnModuleInit {
                 }
             }
 
-            // Indexar en catálogo general (todas las etapas: TERMINADO, COSTURA, TEJIDO)
             if (model && size) {
                 const msKey = `${model}__${size}`;
                 if (!allByModelSize.has(msKey)) allByModelSize.set(msKey, []);
@@ -975,9 +1548,24 @@ export class OrdenesProduccionService implements OnModuleInit {
             }
         }
 
+        // Aplicar también los alias personalizados guardados en articulo_alias_susana
+        for (const [susiKey, targetCodeUpper] of customAliasMap.entries()) {
+            const targetArt = artByCode.get(targetCodeUpper);
+            if (targetArt) {
+                artBySusi.set(susiKey, targetArt);
+            }
+        }
 
+        // Helper para determinar el EstadoMatchArticuloPlanilla de un artículo
+        const getEstadoMatchForCatalogItem = (matched?: ArticuloCatalogItem | null): EstadoMatchArticuloPlanilla => {
+            if (!matched) return 'SIN_MATCH';
+            if (!matched.bomRefs || matched.bomRefs.length === 0) return 'SIN_ESTRUCTURA';
+            const missingItem = matched.bomRefs.some((b) => !b.item);
+            if (missingItem) return 'ESTRUCTURA_INCOMPLETA';
+            return 'OK';
+        };
 
-        // 3. Cruzar cada entrada extraída con el Catálogo de Artículos (100% Match con TEJIDO)
+        // 3. Cruzar cada entrada extraída con el Catálogo de Artículos
         for (const entry of allRawEntries) {
             const { code, talle: parsedTalle } = this.cleanArtCode(entry.articleRaw);
             entry.articleCode = code;
@@ -995,6 +1583,7 @@ export class OrdenesProduccionService implements OnModuleInit {
                 allByModelSize,
                 allByModel,
                 bomByPadre,
+                customAliasMap,
             );
 
             if (matched) {
@@ -1009,181 +1598,325 @@ export class OrdenesProduccionService implements OnModuleInit {
                     codigoSusi: matched.codigoSusi,
                     estadoRevision: matched.estadoRevision,
                 };
-                entry.isUnreviewed = matched.estadoRevision !== EstadoRevisionArticulo.CHEQUEADO;
+                const estMatch = getEstadoMatchForCatalogItem(matched);
+                entry.isUnreviewed = estMatch !== 'OK';
             } else {
                 entry.matchedArticle = null;
                 entry.isUnreviewed = true;
             }
         }
 
-        // Cargar última planilla previa para comparar máquinas entre días (evitar cambios falsos)
-        let previousPlanillaMaquinas: any[] = [];
-        try {
-            const prevRows = await this.dataSource.query(
-                `SELECT datos_completos FROM planillas_produccion_diaria 
-                 ${existingId ? 'WHERE id != $1' : ''} 
-                 ORDER BY creado_en DESC LIMIT 1`,
-                existingId ? [existingId] : [],
-            );
-            if (prevRows?.[0]?.datos_completos?.maquinas) {
-                previousPlanillaMaquinas = prevRows[0].datos_completos.maquinas;
-            }
-        } catch {
-            // Ignorar
-        }
-        const lastMachineArticle = new Map<number, any>();
-        for (const pm of previousPlanillaMaquinas) {
-            lastMachineArticle.set(Number(pm.machine), pm);
-        }
+        // Helper para buscar la duración esperada de un cambio desde machine_changes en la BD
+        const resolveChangeDuration = (
+            dbMachine: { id: string } | undefined,
+            changeTypes: string[],
+            defaultHours: number,
+        ): {
+            durationHours: number;
+            durationMinutes: number;
+            durationText: string;
+            esEstimada: boolean;
+            muestrasBd: number;
+            motivoDuracion: string;
+        } => {
+            const sortedTypes = changeTypes.slice().sort();
+            const typeKey = sortedTypes.join('+') || 'ARTICULO';
+            const mKey = dbMachine ? `${dbMachine.id}__${typeKey}` : '';
 
-        // 4. Agrupar por (fecha, turno, máquina) para calcular las 12 horas del turno y los cambios a las 08:00 AM
-        const entriesByMachineShift = new Map<string, ParsedMachineEntry[]>();
+            const specificHist = mKey ? changeDurationsByMachineAndType.get(mKey) : undefined;
+            const globalHist =
+                changeDurationsByType.get(typeKey) ||
+                (typeKey === 'TALLE' ? changeDurationsByType.get('ARTICULO+TALLE') : undefined) ||
+                (typeKey === 'COLOR+TALLE' ? changeDurationsByType.get('ARTICULO+COLOR+TALLE') : undefined);
+
+            let hours = defaultHours;
+            let muestras = 0;
+            let motivo = '';
+
+            if (specificHist && specificHist.length >= 2) {
+                hours = specificHist.reduce((a, b) => a + b, 0) / specificHist.length;
+                muestras = specificHist.length;
+                motivo = `Promedio de esta máquina en BD (${muestras} cambios registrados de tipo ${typeKey})`;
+            } else if (globalHist && globalHist.length > 0) {
+                hours = globalHist.reduce((a, b) => a + b, 0) / globalHist.length;
+                muestras = globalHist.length;
+                motivo = `Promedio histórico en BD para ${typeKey.replace(/\+/g, ' + ')} (${muestras} registros en Mantenimiento)`;
+            } else {
+                motivo = `Tiempo estimado por defecto para ${typeKey.replace(/\+/g, ' + ')} (sin historial previo en BD)`;
+            }
+
+            const minutes = Math.max(5, Math.round(hours * 60));
+            const cleanHours = Math.round((minutes / 60) * 100) / 100;
+            const hPart = Math.floor(minutes / 60);
+            const mPart = minutes % 60;
+            const durationText = hPart > 0 ? `${hPart}h ${mPart > 0 ? `${mPart}m` : ''}`.trim() : `${minutes} min`;
+
+            return {
+                durationHours: cleanHours,
+                durationMinutes: minutes,
+                durationText,
+                esEstimada: true,
+                muestrasBd: muestras,
+                motivoDuracion: motivo,
+            };
+        };
+
+        // Helper para comparar si dos entradas representan el mismo artículo en máquina
+        const isSameEntryArticle = (a: ParsedMachineEntry, b: ParsedMachineEntry): boolean => {
+            if (a.matchedArticle && b.matchedArticle) {
+                return a.matchedArticle.codigo.toUpperCase() === b.matchedArticle.codigo.toUpperCase();
+            }
+            const codeA = (a.articleRaw || a.articleCode || '').trim().toUpperCase().replace(/\s+/g, ' ');
+            const codeB = (b.articleRaw || b.articleCode || '').trim().toUpperCase().replace(/\s+/g, ' ');
+            const talleA = (a.talle || '').trim().toUpperCase();
+            const talleB = (b.talle || '').trim().toUpperCase();
+            const colorA = (a.colorRaw || '').trim().toUpperCase();
+            const colorB = (b.colorRaw || '').trim().toUpperCase();
+            return codeA === codeB && talleA === talleB && colorA === colorB;
+        };
+
+        // 4. Agrupar por (fecha, máquina) para evaluar las 24 horas del día (M + N) y detectar los cambios de la planilla
+        const entriesByDateMachine = new Map<string, { M: ParsedMachineEntry[]; N: ParsedMachineEntry[] }>();
         for (const entry of allRawEntries) {
             if (!entry.articleRaw && !entry.descRaw) continue;
-            const msKey = `${entry.date || 'HOY'}__${entry.shift || 'M'}__${entry.machine}`;
-            if (!entriesByMachineShift.has(msKey)) entriesByMachineShift.set(msKey, []);
-            entriesByMachineShift.get(msKey)!.push(entry);
-        }
-
-        let totalCambiosProgramados08AM = 0;
-
-        for (const [, machineGroup] of entriesByMachineShift.entries()) {
-            const machineNum = machineGroup[0].machine;
-            const dbMachine = machineByNumber.get(machineNum);
-
-            if (machineGroup.length === 1) {
-                const e = machineGroup[0];
-                e.orderInShift = 1;
-                e.totalArticlesInMachineShift = 1;
-
-                // Verificar si difiere del artículo del día anterior en esta máquina
-                const prev = lastMachineArticle.get(machineNum);
-                let isDayChange = false;
-                if (prev) {
-                    const codeToday = (e.articleCode || e.articleRaw || '').trim().toUpperCase();
-                    const codePrev = (prev.articleCode || prev.articleRaw || '').trim().toUpperCase();
-                    const talleToday = (e.talle || '').trim().toUpperCase();
-                    const tallePrev = (prev.talle || '').trim().toUpperCase();
-                    const colorToday = (e.colorRaw || '').trim().toUpperCase();
-                    const colorPrev = (prev.colorRaw || '').trim().toUpperCase();
-
-                    if (codeToday && codePrev && (codeToday !== codePrev || talleToday !== tallePrev || colorToday !== colorPrev)) {
-                        isDayChange = true;
-                        totalCambiosProgramados08AM += 1;
-                        const { changeTypes, label, defaultHours } = this.inferChangeoverType(prev, e);
-                        e.hasChangeover = true;
-                        e.changeoverRole = 'ENTRANTE_08AM';
-                        e.changeoverType = label;
-                        e.changeoverTypes = changeTypes;
-                        e.changeoverDurationMinutes = Math.round(defaultHours * 60);
-                        e.salienteArticuloAnterior = {
-                            articleCode: codePrev,
-                            articleRaw: prev.articleRaw,
-                            descRaw: prev.descRaw,
-                            talle: tallePrev,
-                            colorRaw: colorPrev,
-                        };
-                    }
-                }
-
-                if (!isDayChange) {
-                    e.hasChangeover = false;
-                    e.changeoverRole = 'UNICO';
-                    e.changeoverType = null;
-                    e.changeoverTypes = [];
-                    e.changeoverDurationMinutes = 0;
-                }
-
-                e.grossHours = 12;
-                e.netHours = 12;
-                e.netSeconds = 12 * 3600;
-                e.horarioTexto = e.shift === 'N' ? '18:00 a 06:00 (12h)' : '06:00 a 18:00 (12h)';
-                this.computeEntryProductionAndYarn(e, dbMachine, artByCode);
+            const dmKey = `${entry.date || 'HOY'}__${entry.machine}`;
+            if (!entriesByDateMachine.has(dmKey)) {
+                entriesByDateMachine.set(dmKey, { M: [], N: [] });
+            }
+            const group = entriesByDateMachine.get(dmKey)!;
+            if ((entry.shift || 'M').toUpperCase() === 'N') {
+                group.N.push(entry);
             } else {
-                // Hay múltiples artículos en la celda del turno
-                const first = machineGroup[0];
-                const second = machineGroup[1];
-
-                const codeFirst = (first.articleCode || first.articleRaw || '').trim().toUpperCase();
-                const codeSecond = (second.articleCode || second.articleRaw || '').trim().toUpperCase();
-                const talleFirst = (first.talle || '').trim().toUpperCase();
-                const talleSecond = (second.talle || '').trim().toUpperCase();
-                const colorFirst = (first.colorRaw || '').trim().toUpperCase();
-                const colorSecond = (second.colorRaw || '').trim().toUpperCase();
-
-                const isSameInShift = codeFirst === codeSecond && talleFirst === talleSecond && colorFirst === colorSecond;
-
-                if (isSameInShift) {
-                    // Es el mismo artículo repetido entre renglones, no hay cambio!
-                    first.orderInShift = 1;
-                    first.totalArticlesInMachineShift = 1;
-                    first.hasChangeover = false;
-                    first.changeoverRole = 'UNICO';
-                    first.changeoverType = null;
-                    first.changeoverTypes = [];
-                    first.changeoverDurationMinutes = 0;
-                    first.grossHours = 12;
-                    first.netHours = 12;
-                    first.netSeconds = 12 * 3600;
-                    first.horarioTexto = first.shift === 'N' ? '18:00 a 06:00 (12h)' : '06:00 a 18:00 (12h)';
-                    this.computeEntryProductionAndYarn(first, dbMachine, artByCode);
-                } else {
-                    totalCambiosProgramados08AM += 1;
-                    const { changeTypes, label, defaultHours } = this.inferChangeoverType(first, second);
-                    const typeKey = changeTypes.slice().sort().join('+');
-                    const mKey = dbMachine ? `${dbMachine.id}__${typeKey}` : '';
-
-                    const specificHist = mKey ? changeDurationsByMachineAndType.get(mKey) : undefined;
-                    const globalHist = changeDurationsByType.get(typeKey);
-                    let changeDurationHours = defaultHours;
-                    if (specificHist && specificHist.length > 0) {
-                        changeDurationHours = specificHist.reduce((a, b) => a + b, 0) / specificHist.length;
-                    } else if (globalHist && globalHist.length > 0) {
-                        changeDurationHours = globalHist.reduce((a, b) => a + b, 0) / globalHist.length;
-                    }
-                    changeDurationHours = Math.round(changeDurationHours * 100) / 100;
-                    const changeMinutes = Math.round(changeDurationHours * 60);
-
-                    // Artículo 1 (Saliente: teje 2 horas de 06:00 a 08:00)
-                    first.orderInShift = 1;
-                    first.totalArticlesInMachineShift = machineGroup.length;
-                    first.hasChangeover = true;
-                    first.changeoverRole = 'SALIENTE_08AM';
-                    first.changeoverType = label;
-                    first.changeoverTypes = changeTypes;
-                    first.changeoverDurationMinutes = changeMinutes;
-                    first.grossHours = 2;
-                    first.netHours = 2;
-                    first.netSeconds = 2 * 3600;
-                    first.horarioTexto = '06:00 a 08:00 (2h hasta cambio)';
-                    this.computeEntryProductionAndYarn(first, dbMachine, artByCode);
-
-                    // Artículos entrantes después del cambio de las 08:00 AM
-                    const remainingEntries = machineGroup.slice(1);
-                    const grossRemainingEach = 10 / remainingEntries.length;
-                    const netRemainingTotal = Math.max(0.5, 10 - changeDurationHours);
-                    const netRemainingEach = Math.round((netRemainingTotal / remainingEntries.length) * 100) / 100;
-
-                    remainingEntries.forEach((ent, idx) => {
-                        ent.orderInShift = idx + 2;
-                        ent.totalArticlesInMachineShift = machineGroup.length;
-                        ent.hasChangeover = true;
-                        ent.changeoverRole = 'ENTRANTE_08AM';
-                        ent.changeoverType = label;
-                        ent.changeoverTypes = changeTypes;
-                        ent.changeoverDurationMinutes = changeMinutes;
-                        ent.grossHours = Math.round(grossRemainingEach * 100) / 100;
-                        ent.netHours = netRemainingEach;
-                        ent.netSeconds = Math.round(netRemainingEach * 3600);
-                        ent.horarioTexto = `08:00 a 18:00 (${netRemainingEach}h netas tras ${changeMinutes}m de ${label})`;
-                        this.computeEntryProductionAndYarn(ent, dbMachine, artByCode);
-                    });
-                }
+                group.M.push(entry);
             }
         }
 
-        // 5. Consolidar Artículos a Tejer con sus Docenas, Pares, Medias y Kilos de Hilado
+        const listadoCambios: CambioPlanillaItem[] = [];
+
+        const buildCambioArticuloRef = (e: ParsedMachineEntry): CambioArticuloRef => {
+            const matched = e.matchedArticle ? artByCode.get(e.matchedArticle.codigo.toUpperCase()) : null;
+            return {
+                codigoSusana: (e.articleRaw || e.articleCode || 'SIN CÓDIGO').trim(),
+                codigoCatalogo: matched ? matched.codigo : null,
+                articuloId: matched ? matched.id : null,
+                descripcion: matched?.descripcion || e.descRaw || 'Sin descripción',
+                talle: e.talle || matched?.talle || '',
+                color: e.colorRaw || matched?.variante || '',
+                estadoMatch: getEstadoMatchForCatalogItem(matched),
+            };
+        };
+
+        // Procesar un turno (12h) o las 24h cuando solo se subió un turno
+        const processShiftEntries = (
+            shiftEntries: ParsedMachineEntry[],
+            shift: 'M' | 'N',
+            shiftTotalHours: number,
+            dbMachine: { id: string; number: number; typeId: string; machineTypeName: string; status: string } | undefined,
+            dateStr: string,
+            machineNum: number,
+        ) => {
+            // Filtrar duplicados idénticos consecutivos en la misma celda
+            const deduped: ParsedMachineEntry[] = [];
+            for (const ent of shiftEntries) {
+                if (deduped.length === 0 || !isSameEntryArticle(deduped[deduped.length - 1], ent)) {
+                    deduped.push(ent);
+                } else {
+                    // Si estaba duplicado en la misma celda, dejar en 0 la copia redundante
+                    ent.grossHours = 0;
+                    ent.netHours = 0;
+                    ent.netSeconds = 0;
+                    ent.hasChangeover = false;
+                    this.computeEntryProductionAndYarn(ent, dbMachine, artByCode);
+                }
+            }
+
+            if (deduped.length === 0) return;
+
+            if (deduped.length === 1) {
+                const e = deduped[0];
+                e.orderInShift = 1;
+                e.totalArticlesInMachineShift = 1;
+                e.hasChangeover = false;
+                e.changeoverRole = 'UNICO';
+                e.changeoverType = null;
+                e.changeoverTypes = [];
+                e.changeoverDurationMinutes = 0;
+                e.grossHours = shiftTotalHours;
+                e.netHours = shiftTotalHours;
+                e.netSeconds = Math.round(shiftTotalHours * 3600);
+                e.horarioTexto =
+                    shift === 'N'
+                        ? `18:00 a 06:00 (${shiftTotalHours}h)`
+                        : `06:00 a 18:00 (${shiftTotalHours}h)`;
+                this.computeEntryProductionAndYarn(e, dbMachine, artByCode);
+                return;
+            }
+
+            // Hay cambio en la planilla (2 o más artículos distintos en la máquina)
+            const first = deduped[0];
+            const second = deduped[1];
+
+            const { changeTypes, label, defaultHours, inferredWithoutMatch } = this.inferChangeoverType(first, second);
+            const durInfo = resolveChangeDuration(dbMachine, changeTypes, defaultHours);
+
+            const claveCambio = `${dateStr}__${machineNum}__${shift}`;
+            const defaultHora = shift === 'N' ? '06:00' : '07:00';
+            const horaGuardada = horaOverrideMap.get(claveCambio);
+            const horaEfectiva = horaGuardada || defaultHora;
+            const horaEsDefault = !horaGuardada;
+
+            const hoursSaliente = this.computeHoursBeforeChange(horaEfectiva, shift);
+
+            first.orderInShift = 1;
+            first.totalArticlesInMachineShift = deduped.length;
+            first.hasChangeover = true;
+            first.changeoverRole = 'SALIENTE_08AM';
+            first.changeoverType = label;
+            first.changeoverTypes = changeTypes;
+            first.changeoverDurationMinutes = durInfo.durationMinutes;
+            first.grossHours = hoursSaliente;
+            first.netHours = hoursSaliente;
+            first.netSeconds = Math.round(hoursSaliente * 3600);
+            first.horarioTexto = `Hasta ${horaEfectiva} (${hoursSaliente}h antes del cambio)`;
+            this.computeEntryProductionAndYarn(first, dbMachine, artByCode);
+
+            const remainingEntries = deduped.slice(1);
+            const grossRemainingTotal = Math.max(0.5, shiftTotalHours - hoursSaliente);
+            const netRemainingTotal = Math.max(0.25, shiftTotalHours - hoursSaliente - durInfo.durationHours);
+            const grossEach = Math.round((grossRemainingTotal / remainingEntries.length) * 100) / 100;
+            const netEach = Math.round((netRemainingTotal / remainingEntries.length) * 100) / 100;
+
+            remainingEntries.forEach((ent, idx) => {
+                ent.orderInShift = idx + 2;
+                ent.totalArticlesInMachineShift = deduped.length;
+                ent.hasChangeover = true;
+                ent.changeoverRole = 'ENTRANTE_08AM';
+                ent.changeoverType = label;
+                ent.changeoverTypes = changeTypes;
+                ent.changeoverDurationMinutes = durInfo.durationMinutes;
+                ent.grossHours = grossEach;
+                ent.netHours = netEach;
+                ent.netSeconds = Math.round(netEach * 3600);
+                ent.horarioTexto = `Desde ${horaEfectiva} (${netEach}h netas tras ${durInfo.durationMinutes}m de ${label})`;
+                this.computeEntryProductionAndYarn(ent, dbMachine, artByCode);
+            });
+
+            // Horas totales del artículo entrante en las 24h del día (M + N):
+            // Si el cambio es en M (12h), en las 24h del día el entrante teje netEach + 12h de N (salvo que N cambie)
+            const horasEntranteEn24h =
+                shift === 'M' && shiftTotalHours === 12 ? Math.round((netEach + 12) * 100) / 100 : netEach;
+
+            listadoCambios.push({
+                id: claveCambio,
+                fecha: dateStr,
+                maquina: machineNum,
+                area: first.area || second.area || '',
+                turno: shift,
+                tipoMaquina: dbMachine?.machineTypeName || 'Lonati Tejeduría',
+                articuloSaliente: buildCambioArticuloRef(first),
+                articuloEntrante: buildCambioArticuloRef(second),
+                hora: horaEfectiva,
+                horaEsDefault,
+                motivoHora: horaEsDefault
+                    ? `Horario por defecto (${defaultHora} hs). Podés cambiarlo haciendo clic sobre la hora.`
+                    : `Horario personalizado guardado (${horaEfectiva} hs).`,
+                tipoCambio: label,
+                tiposCambioArray: changeTypes,
+                tipoEsInferidoSinMatch: inferredWithoutMatch,
+                duracionEsperadaMin: durInfo.durationMinutes,
+                duracionTexto: durInfo.durationText,
+                duracionEsEstimada: durInfo.esEstimada,
+                motivoDuracion: durInfo.motivoDuracion,
+                muestrasHistorialBd: durInfo.muestrasBd,
+                horasTejidoSaliente: hoursSaliente,
+                horasTejidoEntranteDia: horasEntranteEn24h,
+            });
+        };
+
+        for (const [dmKey, group] of entriesByDateMachine.entries()) {
+            const [dateStr, machineStr] = dmKey.split('__');
+            const machineNum = Number(machineStr);
+            const dbMachine = machineByNumber.get(machineNum);
+
+            const hasM = group.M.length > 0;
+            const hasN = group.N.length > 0;
+
+            if (hasM && hasN) {
+                processShiftEntries(group.M, 'M', 12, dbMachine, dateStr, machineNum);
+                processShiftEntries(group.N, 'N', 12, dbMachine, dateStr, machineNum);
+
+                // Caso puntual: M tenía 1 solo artículo, N tiene 1 solo artículo, pero entre M y N cambió el artículo
+                const lastM = group.M[group.M.length - 1];
+                const firstN = group.N[0];
+                if (
+                    group.M.length === 1 &&
+                    group.N.length === 1 &&
+                    lastM &&
+                    firstN &&
+                    !isSameEntryArticle(lastM, firstN)
+                ) {
+                    const { changeTypes, label, defaultHours, inferredWithoutMatch } = this.inferChangeoverType(
+                        lastM,
+                        firstN,
+                    );
+                    const durInfo = resolveChangeDuration(dbMachine, changeTypes, defaultHours);
+                    const claveCambioN = `${dateStr}__${machineNum}__N`;
+                    const horaGuardada = horaOverrideMap.get(claveCambioN);
+                    const horaEfectiva = horaGuardada || '06:00';
+                    const horaEsDefault = !horaGuardada;
+
+                    const netHoursN = Math.max(0.5, Math.round((12 - durInfo.durationHours) * 100) / 100);
+                    firstN.hasChangeover = true;
+                    firstN.changeoverRole = 'ENTRANTE_08AM';
+                    firstN.changeoverType = label;
+                    firstN.changeoverTypes = changeTypes;
+                    firstN.changeoverDurationMinutes = durInfo.durationMinutes;
+                    firstN.grossHours = 12;
+                    firstN.netHours = netHoursN;
+                    firstN.netSeconds = Math.round(netHoursN * 3600);
+                    firstN.horarioTexto = `Turno N (${netHoursN}h netas tras ${durInfo.durationMinutes}m de ${label})`;
+                    this.computeEntryProductionAndYarn(firstN, dbMachine, artByCode);
+
+                    listadoCambios.push({
+                        id: claveCambioN,
+                        fecha: dateStr,
+                        maquina: machineNum,
+                        area: firstN.area || lastM.area || '',
+                        turno: 'N',
+                        tipoMaquina: dbMachine?.machineTypeName || 'Lonati Tejeduría',
+                        articuloSaliente: buildCambioArticuloRef(lastM),
+                        articuloEntrante: buildCambioArticuloRef(firstN),
+                        hora: horaEfectiva,
+                        horaEsDefault,
+                        motivoHora: horaEsDefault
+                            ? 'Horario por defecto para turno noche (06:00 hs). Editable.'
+                            : `Horario personalizado guardado (${horaEfectiva} hs).`,
+                        tipoCambio: label,
+                        tiposCambioArray: changeTypes,
+                        tipoEsInferidoSinMatch: inferredWithoutMatch,
+                        duracionEsperadaMin: durInfo.durationMinutes,
+                        duracionTexto: durInfo.durationText,
+                        duracionEsEstimada: durInfo.esEstimada,
+                        motivoDuracion: durInfo.motivoDuracion,
+                        muestrasHistorialBd: durInfo.muestrasBd,
+                        horasTejidoSaliente: 12,
+                        horasTejidoEntranteDia: netHoursN,
+                    });
+                }
+            } else if (hasM && !hasN) {
+                // Si se cargó solo el archivo M, proyectamos sobre las 24 horas del día
+                processShiftEntries(group.M, 'M', 24, dbMachine, dateStr, machineNum);
+            } else if (!hasM && hasN) {
+                processShiftEntries(group.N, 'N', 24, dbMachine, dateStr, machineNum);
+            }
+        }
+
+        listadoCambios.sort((a, b) => a.maquina - b.maquina || a.turno.localeCompare(b.turno));
+        const totalCambiosProgramados08AM = listadoCambios.length;
+
+        // 5. Consolidar Artículos y Pendientes de Completar (SIN_MATCH, SIN_ESTRUCTURA, ESTRUCTURA_INCOMPLETA)
         const articulosMap = new Map<string, ArticuloProduccionSummary>();
+        const pendientesMap = new Map<string, PendientePlanillaItem>();
         const fechasSet = new Set<string>();
         const turnosSet = new Set<string>();
         const areasSet = new Set<string>();
@@ -1194,6 +1927,63 @@ export class OrdenesProduccionService implements OnModuleInit {
             if (entry.area) areasSet.add(entry.area);
 
             if (!entry.articleRaw && !entry.descRaw) continue;
+            if ((entry.netHours || 0) <= 0 && entry.totalArticlesInMachineShift === undefined) continue;
+
+            const matched = entry.matchedArticle ? artByCode.get(entry.matchedArticle.codigo.toUpperCase()) : null;
+            const estadoMatch = getEstadoMatchForCatalogItem(matched);
+
+            // Registrar en pendientesCompletar si no está OK
+            if (estadoMatch !== 'OK') {
+                const rawSusi = (entry.articleRaw || entry.articleCode || 'SIN_CODIGO').trim();
+                const pendKey = matched ? `ART__${matched.codigo.toUpperCase()}` : `RAW__${rawSusi.toUpperCase()}`;
+
+                if (!pendientesMap.has(pendKey)) {
+                    const candidatos = this.findSuggestedCandidatesForUnmatched(
+                        rawSusi,
+                        entry.talle,
+                        artByCode,
+                        tejidoByModel,
+                        allByModel,
+                    );
+                    const compSinItem =
+                        matched?.bomRefs.filter((b) => !b.item).map((b) => b.codigoComponente) || [];
+
+                    let mensajeEstado = '';
+                    if (estadoMatch === 'SIN_MATCH') {
+                        mensajeEstado =
+                            'El código de Susana no está vinculado a ningún artículo de la base de datos. Tocalo para elegir a qué código corresponde.';
+                    } else if (estadoMatch === 'SIN_ESTRUCTURA') {
+                        mensajeEstado = `Está matcheado con el artículo ${matched?.codigo}, pero no tiene estructura de hilados cargada.`;
+                    } else {
+                        mensajeEstado = `El artículo ${matched?.codigo} tiene estructura, pero falta vincular al depósito: ${compSinItem.join(', ')}.`;
+                    }
+
+                    pendientesMap.set(pendKey, {
+                        key: pendKey,
+                        codigoSusana: rawSusi,
+                        talle: entry.talle || matched?.talle || '',
+                        color: entry.colorRaw || matched?.variante || '',
+                        descripcionPdf: entry.descRaw || matched?.descripcion || '',
+                        maquinas: [],
+                        areas: [],
+                        estado: estadoMatch,
+                        mensajeEstado,
+                        articuloMatcheado: matched
+                            ? {
+                                  id: matched.id,
+                                  codigo: matched.codigo,
+                                  descripcion: matched.descripcion,
+                                  etapa: matched.etapa || 'TEJIDO',
+                              }
+                            : null,
+                        componentesSinItem: compSinItem,
+                        candidatosSugeridos: candidatos,
+                    });
+                }
+                const pend = pendientesMap.get(pendKey)!;
+                if (!pend.maquinas.includes(entry.machine)) pend.maquinas.push(entry.machine);
+                if (entry.area && !pend.areas.includes(entry.area)) pend.areas.push(entry.area);
+            }
 
             const artTalle = (entry.talle || entry.matchedArticle?.talle || '').trim().toUpperCase();
             const key = entry.matchedArticle
@@ -1201,35 +1991,45 @@ export class OrdenesProduccionService implements OnModuleInit {
                 : `${entry.articleCode || entry.articleRaw || 'SIN_CODIGO'}__${artTalle || 'U'}`.toUpperCase();
 
             if (!articulosMap.has(key)) {
-                const matched = entry.matchedArticle ? artByCode.get(entry.matchedArticle.codigo.toUpperCase()) : null;
-                const estado = matched ? matched.estadoRevision! : 'NO_ENCONTRADO';
-                const isUnreviewed = !matched || matched.estadoRevision !== EstadoRevisionArticulo.CHEQUEADO;
+                const estado = !matched
+                    ? 'NO_ENCONTRADO'
+                    : estadoMatch === 'OK'
+                      ? EstadoRevisionArticulo.CHEQUEADO
+                      : estadoMatch === 'ESTRUCTURA_INCOMPLETA'
+                        ? EstadoRevisionArticulo.INCOMPLETO
+                        : EstadoRevisionArticulo.PENDIENTE;
+                const isUnreviewed = estadoMatch !== 'OK';
 
                 let advertencia: string | undefined;
                 if (!matched) {
-                    advertencia = 'Artículo no encontrado en el catálogo de Desarrollo.';
+                    advertencia = 'Código de Susana sin matchear con el catálogo.';
                 } else if (matched.bomRefs.length === 0) {
-                    advertencia = 'Artículo sin estructura de hilados cargada.';
+                    advertencia = 'Artículo matcheado pero sin estructura de hilados cargada.';
+                } else if (estadoMatch === 'ESTRUCTURA_INCOMPLETA') {
+                    advertencia = 'Estructura con componentes sin ítem equivalente en depósito.';
                 }
 
-                const mappedRefs = (matched?.bomRefs || []).map((b) => ({
-                    rol: 'HILADO',
-                    colorNombre: b.descripcionComponente,
-                    consumoKgPorDocena: b.cantidadKgPorDocena,
-                    codigoComponente: b.codigoComponente,
-                    item: b.item || {
-                        id: b.codigoComponente,
-                        codigoInterno: b.codigoComponente,
-                        descripcion: b.descripcionComponente,
-                        tono: null,
-                        unidadPrincipal: 'KG',
-                        pesoConoKg: 1.5,
-                        stockMinimo: 0,
-                    },
-                }));
+                const mappedRefs = (matched?.bomRefs || []).map((b) => {
+                    const coneInfo = this.resolvePesoCono(b.item, b.codigoComponente, b.descripcionComponente);
+                    return {
+                        rol: 'HILADO',
+                        colorNombre: b.descripcionComponente,
+                        consumoKgPorDocena: b.cantidadKgPorDocena,
+                        codigoComponente: b.codigoComponente,
+                        item: b.item || {
+                            id: b.codigoComponente,
+                            codigoInterno: b.codigoComponente,
+                            descripcion: b.descripcionComponente,
+                            tono: null,
+                            unidadPrincipal: 'KG',
+                            pesoConoKg: coneInfo.pesoConoKg,
+                            stockMinimo: 0,
+                        },
+                    };
+                });
 
                 articulosMap.set(key, {
-                    codigo: matched ? matched.codigo : (entry.articleCode || entry.articleRaw || 'SIN_CODIGO'),
+                    codigo: matched ? matched.codigo : entry.articleCode || entry.articleRaw || 'SIN_CODIGO',
                     codigoOriginalPdf: entry.articleRaw,
                     codigoSusi: matched?.codigoSusi || entry.articleRaw,
                     descripcion: matched?.descripcion || entry.descRaw || 'Sin descripción',
@@ -1241,7 +2041,7 @@ export class OrdenesProduccionService implements OnModuleInit {
                     maquinasCount: 0,
                     maquinas: [],
                     maquinasDetalle: [],
-                    cycleTimeSecondsPromedio: matched?.defaultCycleTimeSeconds || 95,
+                    cycleTimeSecondsPromedio: matched?.defaultCycleTimeSeconds || DEFAULT_CYCLE_SEC_PLANTA,
                     horasTejidoTotales: 0,
                     mediasTotales: 0,
                     paresTotales: 0,
@@ -1263,7 +2063,8 @@ export class OrdenesProduccionService implements OnModuleInit {
             if (entry.date && !artSummary.fechas.includes(entry.date)) artSummary.fechas.push(entry.date);
             if (!artSummary.maquinas.includes(entry.machine)) artSummary.maquinas.push(entry.machine);
 
-            artSummary.horasTejidoTotales = Math.round((artSummary.horasTejidoTotales + (entry.netHours || 0)) * 100) / 100;
+            artSummary.horasTejidoTotales =
+                Math.round((artSummary.horasTejidoTotales + (entry.netHours || 0)) * 100) / 100;
             artSummary.mediasTotales += entry.mediasEstimadas || 0;
             artSummary.paresTotales = Math.round((artSummary.mediasTotales / 2) * 10) / 10;
             artSummary.docenasTotales = Math.round((artSummary.mediasTotales / 24) * 100) / 100;
@@ -1295,6 +2096,14 @@ export class OrdenesProduccionService implements OnModuleInit {
             return a;
         });
 
+        const pendientesCompletar = Array.from(pendientesMap.values())
+            .map((p) => {
+                p.maquinas.sort((a, b) => a - b);
+                p.areas.sort();
+                return p;
+            })
+            .sort((a, b) => b.maquinas.length - a.maquinas.length);
+
         // 6. Consolidar Colores
         const coloresMap = new Map<string, { color: string; maquinasSet: Set<number>; articulosSet: Set<string> }>();
         for (const entry of allRawEntries) {
@@ -1317,15 +2126,19 @@ export class OrdenesProduccionService implements OnModuleInit {
             }))
             .sort((a, b) => b.maquinasCount - a.maquinasCount);
 
-        // 7. Explosión Exacta de Materiales / Hilados con Consumo en KG, Stock en Picking vs Reserva y Compras
+        // 7. Explosión de Hilados (listadoHilado + materialesList)
         const materialesMap = new Map<string, MaterialAsignadoSummary>();
+        const hiladoPlanillaMap = new Map<string, HiladoPlanillaItem>();
 
         for (const entry of allRawEntries) {
-            if (!entry.matchedArticle) continue;
+            if (!entry.matchedArticle || (entry.netHours || 0) <= 0) continue;
             const matched = artByCode.get(entry.matchedArticle.codigo.toUpperCase());
             if (!matched) continue;
 
             const docenasEntry = entry.docenasEstimadas || 0;
+            const timeInfo = timesByArticuloId.get(matched.id);
+            const ritmoEsEstimado = !timeInfo?.isMeasured;
+
             for (const b of matched.bomRefs) {
                 const consumoEntryKg = docenasEntry * b.cantidadKgPorDocena;
                 const itemObj = b.item;
@@ -1333,16 +2146,15 @@ export class OrdenesProduccionService implements OnModuleInit {
                 const codigoInterno = itemObj ? itemObj.codigoInterno : b.codigoComponente;
                 const descripcion = itemObj ? itemObj.descripcion : b.descripcionComponente;
                 const catNombre = itemObj?.category?.nombre || 'HILADO';
-                const pesoCono = Number(itemObj?.pesoConoKg) || 1.5;
+                const coneInfo = this.resolvePesoCono(itemObj, b.codigoComponente, descripcion);
 
                 if (!materialesMap.has(matKey)) {
                     const stockInfo = itemObj ? stockByItemId.get(itemObj.id) : undefined;
                     const pickingKg = Math.round((stockInfo?.pickingKg || 0) * 100) / 100;
                     const reservaKg = Math.round((stockInfo?.reservaKg || 0) * 100) / 100;
-                    const totalStockKg = Math.round((pickingKg + reservaKg) * 100) / 100;
+                    const totalStockKg = Math.round((stockInfo?.totalDepositoKg || 0) * 100) / 100;
                     const minKg = Number(itemObj?.stockMinimo) || 0;
 
-                    // Posiciones de Picking sugeridas (donde ya hay stock en picking + las posiciones cuya categoriaPrincipal/Secundaria coincide con la categoría del hilado)
                     const suggestedPicking = new Set<string>();
                     if (stockInfo?.pickingPositions) {
                         for (const p of stockInfo.pickingPositions) suggestedPicking.add(p);
@@ -1353,7 +2165,6 @@ export class OrdenesProduccionService implements OnModuleInit {
                         suggestedPicking.add(allPickingPositions[0]);
                     }
 
-                    // Partida FIFO más chica y posición de origen
                     const stockLots = stockInfo?.lots || [];
                     const primeraPartida = stockLots.length > 0 ? stockLots[0].partida : null;
                     const primeraPosicion = stockLots.length > 0 ? stockLots[0].posicionCodigo : null;
@@ -1370,7 +2181,7 @@ export class OrdenesProduccionService implements OnModuleInit {
                         proveedor: itemObj?.supplier?.name || null,
                         rotacion: itemObj?.rotacion || null,
                         unidadPrincipal: itemObj?.unidadPrincipal || 'KG',
-                        pesoConoKg: pesoCono,
+                        pesoConoKg: coneInfo.pesoConoKg,
                         maquinasCount: 0,
                         maquinas: [],
                         consumoTotalKg: 0,
@@ -1394,18 +2205,54 @@ export class OrdenesProduccionService implements OnModuleInit {
                         estadoAbastecimiento: 'OK',
                         articulosAsignados: [],
                     });
+
+                    hiladoPlanillaMap.set(matKey, {
+                        id: matKey,
+                        itemId: itemObj ? itemObj.id : null,
+                        codigoHilado: codigoInterno,
+                        codigoComponenteBom: b.codigoComponente,
+                        descripcionHilado: descripcion,
+                        categoria: catNombre,
+                        tipoMaterialCono: coneInfo.tipoMaterialCono,
+                        kilosPedido: 0,
+                        kilosManana: 0,
+                        kilosNoche: 0,
+                        pesoConoKg: coneInfo.pesoConoKg,
+                        pesoConoEsEstimado: coneInfo.esEstimado,
+                        motivoPesoCono: coneInfo.motivoPesoCono,
+                        conos: 0,
+                        stockTotalKg,
+                        stockPickingKg: pickingKg,
+                        stockReservaKg: reservaKg,
+                        posicionesPicking: Array.from(suggestedPicking),
+                        sinEquivalenciaItem: !itemObj,
+                        esSustituto: Boolean((b as any).esSustituto),
+                        sustitutoMotivo: (b as any).sustitutoMotivo || null,
+                        maquinasCount: 0,
+                        maquinas: [],
+                        articulosDetalle: [],
+                    });
                 }
 
                 const matSummary = materialesMap.get(matKey)!;
+                const hiladoItem = hiladoPlanillaMap.get(matKey)!;
+
                 matSummary.consumoTotalKg = Math.round((matSummary.consumoTotalKg + consumoEntryKg) * 100) / 100;
+                hiladoItem.kilosPedido = Math.round((hiladoItem.kilosPedido + consumoEntryKg) * 100) / 100;
+
                 if (entry.shift === 'N') {
                     matSummary.consumoNocheKg = Math.round((matSummary.consumoNocheKg + consumoEntryKg) * 100) / 100;
+                    hiladoItem.kilosNoche = Math.round((hiladoItem.kilosNoche + consumoEntryKg) * 100) / 100;
                 } else {
                     matSummary.consumoMananaKg = Math.round((matSummary.consumoMananaKg + consumoEntryKg) * 100) / 100;
+                    hiladoItem.kilosManana = Math.round((hiladoItem.kilosManana + consumoEntryKg) * 100) / 100;
                 }
 
                 if (!matSummary.maquinas.includes(entry.machine)) {
                     matSummary.maquinas.push(entry.machine);
+                }
+                if (!hiladoItem.maquinas.includes(entry.machine)) {
+                    hiladoItem.maquinas.push(entry.machine);
                 }
 
                 let artAssigned = matSummary.articulosAsignados.find((a) => a.codigoArticulo === matched.codigo);
@@ -1425,6 +2272,27 @@ export class OrdenesProduccionService implements OnModuleInit {
                 }
                 artAssigned.docenasTejidas = Math.round((artAssigned.docenasTejidas + docenasEntry) * 100) / 100;
                 artAssigned.consumoKg = Math.round((artAssigned.consumoKg + consumoEntryKg) * 100) / 100;
+
+                let artDet = hiladoItem.articulosDetalle.find((a) => a.codigoArticulo === matched.codigo);
+                if (!artDet) {
+                    artDet = {
+                        codigoArticulo: matched.codigo,
+                        codigoSusana: entry.articleRaw || matched.codigoSusi || matched.codigo,
+                        descripcion: matched.descripcion,
+                        maquinas: [],
+                        horasTejido: 0,
+                        docenas: 0,
+                        kilos: 0,
+                        ritmoEsEstimado,
+                    };
+                    hiladoItem.articulosDetalle.push(artDet);
+                }
+                if (!artDet.maquinas.includes(entry.machine)) {
+                    artDet.maquinas.push(entry.machine);
+                }
+                artDet.horasTejido = Math.round((artDet.horasTejido + (entry.netHours || 0)) * 100) / 100;
+                artDet.docenas = Math.round((artDet.docenas + docenasEntry) * 100) / 100;
+                artDet.kilos = Math.round((artDet.kilos + consumoEntryKg) * 100) / 100;
             }
         }
 
@@ -1432,7 +2300,7 @@ export class OrdenesProduccionService implements OnModuleInit {
             .map((m) => {
                 m.maquinasCount = m.maquinas.length;
                 m.maquinas.sort((a, b) => a - b);
-                m.conosTotales = Math.ceil(m.consumoTotalKg / (m.pesoConoKg || 1.5));
+                m.conosTotales = Math.ceil(m.consumoTotalKg / (m.pesoConoKg || 1.0));
                 m.aPasarAPickingKg = Math.max(0, Math.round((m.consumoTotalKg - m.stockEnPickingKg) * 100) / 100);
                 m.stockRestanteTotalKg = Math.round((m.stockActualTotalKg - m.consumoTotalKg) * 100) / 100;
                 m.aComprarKg = Math.max(
@@ -1453,7 +2321,16 @@ export class OrdenesProduccionService implements OnModuleInit {
             })
             .sort((a, b) => b.consumoTotalKg - a.consumoTotalKg);
 
-        // 8. Hoja para el Repartidor (Agrupada por Área 1..5, Turno M/N y Artículo)
+        const listadoHilado: HiladoPlanillaItem[] = Array.from(hiladoPlanillaMap.values())
+            .map((h) => {
+                h.maquinas.sort((a, b) => a - b);
+                h.maquinasCount = h.maquinas.length;
+                h.conos = h.kilosPedido > 0 ? Math.max(1, Math.ceil(h.kilosPedido / (h.pesoConoKg || 1.0))) : 0;
+                return h;
+            })
+            .sort((a, b) => b.kilosPedido - a.kilosPedido);
+
+        // 8. Hoja para el Repartidor
         const hojaRepartidor: HojaRepartidorItem[] = [];
         const repartidorGroups = new Map<string, HojaRepartidorItem>();
 
@@ -1496,8 +2373,8 @@ export class OrdenesProduccionService implements OnModuleInit {
             if (entry.hasChangeover) {
                 const roleLabel =
                     entry.changeoverRole === 'SALIENTE_08AM'
-                        ? `Máq #${entry.machine}: Sale 08:00 AM (${entry.changeoverType})`
-                        : `Máq #${entry.machine}: Entra 08:00 AM (${entry.changeoverType}, -${entry.changeoverDurationMinutes}m)`;
+                        ? `Máq #${entry.machine}: Sale 07:00 AM (${entry.changeoverType})`
+                        : `Máq #${entry.machine}: Entra 07:00 AM (${entry.changeoverType}, -${entry.changeoverDurationMinutes}m)`;
                 if (!rItem.cambiosDetalle.includes(roleLabel)) {
                     rItem.cambiosDetalle.push(roleLabel);
                 }
@@ -1536,7 +2413,7 @@ export class OrdenesProduccionService implements OnModuleInit {
                 (a.maquinas[0] || 0) - (b.maquinas[0] || 0),
         );
 
-        // 9. Hoja para Picking (Sector Depósito) y Proyección para Compras
+        // 9. Hoja para Picking
         const hojaPicking: HojaPickingItem[] = [];
         for (const mat of materialesList) {
             const areasSetForMat = new Set<string>();
@@ -1597,23 +2474,28 @@ export class OrdenesProduccionService implements OnModuleInit {
         const articulosChequeados = articulosSummaryList.filter(
             (a) => a.estadoRevision === EstadoRevisionArticulo.CHEQUEADO,
         ).length;
-        const articulosNoEncontrados = articulosSummaryList.filter((a) => a.estadoRevision === 'NO_ENCONTRADO').length;
-        const articulosNoRevisados = totalArticulos - articulosChequeados;
+        const articulosNoEncontrados = pendientesCompletar.filter((p) => p.estado === 'SIN_MATCH').length;
+        const articulosSinEstructura = pendientesCompletar.filter((p) => p.estado === 'SIN_ESTRUCTURA').length;
+        const articulosEstructuraIncompleta = pendientesCompletar.filter(
+            (p) => p.estado === 'ESTRUCTURA_INCOMPLETA',
+        ).length;
+        const articulosNoRevisados = pendientesCompletar.length;
 
         const uniqueMachinesSet = new Set(allRawEntries.filter((e) => e.articleRaw || e.descRaw).map((e) => e.machine));
         const totalMediasEstimadas = articulosSummaryList.reduce((acc, a) => acc + a.mediasTotales, 0);
         const totalParesEstimados = Math.round((totalMediasEstimadas / 2) * 10) / 10;
         const totalDocenasEstimadas = Math.round((totalMediasEstimadas / 24) * 100) / 100;
         const totalKilosHiladoDia =
-            Math.round(materialesList.reduce((acc, m) => acc + m.consumoTotalKg, 0) * 100) / 100;
+            Math.round(listadoHilado.reduce((acc, m) => acc + m.kilosPedido, 0) * 100) / 100;
+        const totalConosDia = listadoHilado.reduce((acc, m) => acc + m.conos, 0);
         const totalItemsReponerPicking = materialesList.filter((m) => m.aPasarAPickingKg > 0).length;
         const totalItemsCriticosComprar = materialesList.filter(
             (m) => m.estadoAbastecimiento === 'CRITICO_COMPRAR' || m.estadoAbastecimiento === 'ALERTA_MINIMO',
         ).length;
 
-        let mensajeAlerta = `100% de artículos identificados (${articulosChequeados}/${totalArticulos}). Producción estimada: ${totalDocenasEstimadas.toLocaleString('es-AR')} docenas (${totalKilosHiladoDia.toLocaleString('es-AR')} kg de hilado).`;
+        let mensajeAlerta = `100% de artículos completos (${articulosChequeados}/${totalArticulos}). Consumo del día: ${totalKilosHiladoDia.toLocaleString('es-AR')} kg de hilado (${totalConosDia} conos).`;
         if (articulosNoRevisados > 0) {
-            mensajeAlerta = `Atención: Hay ${articulosNoRevisados} de ${totalArticulos} artículos sin estructura confirmada. Revisá las alertas antes de despachar.`;
+            mensajeAlerta = `Hay ${articulosNoRevisados} artículo(s) pendientes de completar (${articulosNoEncontrados} sin matchear, ${articulosSinEstructura + articulosEstructuraIncompleta} sin estructura completa). Tocalos abajo para completarlos.`;
         }
 
         const result: ProduccionParseResult = {
@@ -1621,18 +2503,33 @@ export class OrdenesProduccionService implements OnModuleInit {
             turnos: Array.from(turnosSet).sort(),
             areas: Array.from(areasSet).sort(),
             archivosProcesados,
+            contextoPlanta: {
+                plantaId: selectedPlant?.id || null,
+                plantaNombre: selectedPlant?.nombre || 'Der Will',
+                sector: selectedSector,
+                plantasDisponibles,
+                sectoresDisponibles: Array.from(sectoresSet),
+                ritmoDocenasPorHoraDefault: DEFAULT_DOCENAS_POR_HORA,
+                ritmoEsEstimadoGlobal: true,
+            },
+            listadoHilado,
+            listadoCambios,
+            pendientesCompletar,
             resumenAlertas: {
                 totalArticulosDistintos: totalArticulos,
                 totalMaquinasAsignadas: uniqueMachinesSet.size,
                 articulosChequeados,
                 articulosNoRevisados,
                 articulosNoEncontrados,
+                articulosSinEstructura,
+                articulosEstructuraIncompleta,
                 alertaGlobal: articulosNoRevisados > 0,
                 mensajeAlerta,
                 totalMediasEstimadas,
                 totalParesEstimados,
                 totalDocenasEstimadas,
                 totalKilosHiladoDia,
+                totalConosDia,
                 totalCambiosProgramados08AM,
                 totalItemsReponerPicking,
                 totalItemsCriticosComprar,
@@ -1645,7 +2542,7 @@ export class OrdenesProduccionService implements OnModuleInit {
             hojaPicking,
         };
 
-        // Guardar o actualizar en la tabla de consulta rápida planillas_produccion_diaria
+        // Guardar o actualizar en planillas_produccion_diaria
         const fechaKey = result.fechas.join(', ') || new Date().toISOString().slice(0, 10);
         if (existingId) {
             await this.dataSource.query(
@@ -1689,10 +2586,8 @@ export class OrdenesProduccionService implements OnModuleInit {
     }
 
     /**
-     * Calcula producción individual de una máquina en el turno y su consumo de hilado
-     * Regla clave: cycleTimeSeconds es segundos por MEDIA INDIVIDUAL (1 media).
-     * 1 par = 2 medias. 1 docena de pares = 24 medias.
-     * La estructura BOM de TEJIDO está expresada en KG por DOCENA DE PARES (24 medias).
+     * Calcula producción individual de una máquina en el tramo horario y su consumo de hilado.
+     * Ritmo base de planta: 0,8 docenas por hora (187,5 segundos por media individual).
      */
     private computeEntryProductionAndYarn(
         entry: ParsedMachineEntry,
@@ -1703,21 +2598,23 @@ export class OrdenesProduccionService implements OnModuleInit {
         entry.machineTypeName = dbMachine?.machineTypeName || 'Lonati Tejeduría';
         entry.machineStatus = dbMachine?.status || 'ACTIVA';
 
+        const DEFAULT_CYCLE_SEC = 187.5; // 0,8 docenas por hora = 19,2 medias/hora = 187,5 seg/media
         const matched = entry.matchedArticle ? artByCode.get(entry.matchedArticle.codigo.toUpperCase()) : undefined;
-        let cycleSec = 95;
+        let cycleSec = DEFAULT_CYCLE_SEC;
         if (matched) {
             if (dbMachine?.typeId && matched.cycleTimeByMachineType.has(dbMachine.typeId)) {
                 cycleSec = matched.cycleTimeByMachineType.get(dbMachine.typeId)!;
             } else {
-                cycleSec = matched.defaultCycleTimeSeconds || 95;
+                cycleSec = matched.defaultCycleTimeSeconds || DEFAULT_CYCLE_SEC;
             }
         }
         entry.cycleTimeSeconds = cycleSec;
 
         const netSec = entry.netSeconds || 0;
-        const medias = cycleSec > 0 ? Math.round(netSec / cycleSec) : 0;
+        const docenasExact = cycleSec > 0 ? netSec / cycleSec / 24 : 0;
+        const docenas = Math.round(docenasExact * 100) / 100;
+        const medias = Math.round(docenasExact * 24);
         const pares = Math.round((medias / 2) * 10) / 10;
-        const docenas = Math.round((medias / 24) * 100) / 100;
 
         entry.mediasEstimadas = medias;
         entry.paresEstimados = pares;
@@ -1725,44 +2622,90 @@ export class OrdenesProduccionService implements OnModuleInit {
 
         entry.hiladosMaquina = (matched?.bomRefs || []).map((b) => {
             const consumoKg = Math.round(docenas * b.cantidadKgPorDocena * 100) / 100;
-            const pesoCono = Number(b.item?.pesoConoKg) || 1.5;
+            const coneInfo = this.resolvePesoCono(b.item, b.codigoComponente, b.descripcionComponente);
             return {
                 codigoComponente: b.codigoComponente,
                 codigoItem: b.item?.codigoInterno || b.codigoComponente,
                 descripcion: b.descripcionComponente,
                 kgPorDocena: b.cantidadKgPorDocena,
                 consumoKg,
-                conosEstimados: Math.max(1, Math.ceil(consumoKg / pesoCono)),
+                conosEstimados: consumoKg > 0 ? Math.max(1, Math.ceil(consumoKg / coneInfo.pesoConoKg)) : 0,
             };
         });
     }
 
     /**
-     * Infiere el tipo de cambio en la máquina cuando tiene 2 artículos en la misma celda del PDF
+     * Infiere el tipo de cambio en la máquina comparando el artículo saliente vs el artículo entrante.
+     * Funciona tanto cuando ambos artículos están matcheados en el catálogo como cuando alguno aún no lo está.
      */
     private inferChangeoverType(
         first: ParsedMachineEntry,
         second: ParsedMachineEntry,
-    ): { changeTypes: string[]; label: string; defaultHours: number } {
+    ): { changeTypes: string[]; label: string; defaultHours: number; inferredWithoutMatch: boolean } {
         const m1 = first.matchedArticle;
         const m2 = second.matchedArticle;
+        const inferredWithoutMatch = !m1 || !m2;
 
-        if (m1 && m2) {
-            const sameModel = (m1.modelo || '').toUpperCase() === (m2.modelo || '').toUpperCase() && !!m1.modelo;
-            const sameTalle = (m1.talle || '').toUpperCase() === (m2.talle || '').toUpperCase();
-            const sameVar = (m1.variante || '').toUpperCase() === (m2.variante || '').toUpperCase();
+        const parsed1 = this.cleanArtCode(first.articleRaw || first.articleCode || '');
+        const parsed2 = this.cleanArtCode(second.articleRaw || second.articleCode || '');
 
-            if (sameModel && !sameTalle && sameVar) {
-                return { changeTypes: ['TALLE'], label: 'CAMBIO DE TALLE', defaultHours: 0.5 };
+        const model1 = (m1?.modelo || parsed1.code.split('_')[0] || '').trim().toUpperCase().replace(/^VN000/, 'VN');
+        const model2 = (m2?.modelo || parsed2.code.split('_')[0] || '').trim().toUpperCase().replace(/^VN000/, 'VN');
+
+        const talle1 = (m1?.talle || first.talle || parsed1.talle || '').trim().toUpperCase();
+        const talle2 = (m2?.talle || second.talle || parsed2.talle || '').trim().toUpperCase();
+
+        const var1 = (m1?.variante || first.colorRaw || '').trim().toUpperCase();
+        const var2 = (m2?.variante || second.colorRaw || '').trim().toUpperCase();
+
+        const sameModel = !!model1 && !!model2 && model1 === model2;
+        const sameTalle = talle1 === talle2;
+        const sameVar = var1 === var2;
+
+        if (sameModel) {
+            if (!sameTalle && sameVar) {
+                return { changeTypes: ['TALLE'], label: 'CAMBIO DE TALLE', defaultHours: 0.58, inferredWithoutMatch };
             }
-            if (sameModel && sameTalle && !sameVar) {
-                return { changeTypes: ['COLOR'], label: 'CAMBIO DE COLOR', defaultHours: 0.75 };
+            if (sameTalle && !sameVar) {
+                return { changeTypes: ['COLOR'], label: 'CAMBIO DE COLOR', defaultHours: 0.45, inferredWithoutMatch };
             }
-            if (sameModel && !sameTalle && !sameVar) {
-                return { changeTypes: ['COLOR', 'TALLE'], label: 'CAMBIO COLOR + TALLE', defaultHours: 1.0 };
+            if (!sameTalle && !sameVar) {
+                return {
+                    changeTypes: ['COLOR', 'TALLE'],
+                    label: 'CAMBIO COLOR + TALLE',
+                    defaultHours: 0.75,
+                    inferredWithoutMatch,
+                };
             }
         }
-        return { changeTypes: ['ARTICULO'], label: 'CAMBIO DE ARTÍCULO', defaultHours: 1.25 };
+
+        // Cambia el modelo / artículo
+        if (!sameTalle && !sameVar) {
+            return {
+                changeTypes: ['ARTICULO', 'COLOR', 'TALLE'],
+                label: 'CAMBIO ARTÍCULO + TALLE + COLOR',
+                defaultHours: 0.77,
+                inferredWithoutMatch,
+            };
+        }
+        if (!sameTalle && sameVar) {
+            return {
+                changeTypes: ['ARTICULO', 'TALLE'],
+                label: 'CAMBIO ARTÍCULO + TALLE',
+                defaultHours: 0.58,
+                inferredWithoutMatch,
+            };
+        }
+        if (sameTalle && !sameVar) {
+            return {
+                changeTypes: ['ARTICULO', 'COLOR'],
+                label: 'CAMBIO ARTÍCULO + COLOR',
+                defaultHours: 1.85,
+                inferredWithoutMatch,
+            };
+        }
+
+        return { changeTypes: ['ARTICULO'], label: 'CAMBIO DE ARTÍCULO', defaultHours: 0.94, inferredWithoutMatch };
     }
 
     private descriptionSimilarity(desc1?: string, desc2?: string): number {
@@ -1849,7 +2792,7 @@ export class OrdenesProduccionService implements OnModuleInit {
                 if (!results.some((r) => r.id === currArt.id)) {
                     results.push(currArt);
                 }
-                continue; // Detener descenso por esta rama
+                continue;
             }
 
             const children = bomByPadre.get(curr) || [];
@@ -1865,7 +2808,7 @@ export class OrdenesProduccionService implements OnModuleInit {
     }
 
     /**
-     * Selecciona el mejor candidato de etapa TEJIDO desambiguando por Talle, Color, Variante y Descripción
+     * Selecciona el candidato de etapa TEJIDO desambiguando por Talle y Variante/Color sin adivinar otro talle ni otro color.
      */
     private selectBestTejidoCandidate(
         candidates: ArticuloCatalogItem[],
@@ -1875,53 +2818,49 @@ export class OrdenesProduccionService implements OnModuleInit {
         varHint?: string,
     ): ArticuloCatalogItem | null {
         if (!candidates || candidates.length === 0) return null;
-        if (candidates.length === 1) return candidates[0];
 
         const targetTalle = (talle || '').trim().toUpperCase();
         const targetColor = (colorCol || '').trim().toUpperCase();
-        const targetDesc = (descCol || '').trim().toUpperCase();
         const targetVar = (varHint || '').trim().toUpperCase();
 
-        // 1. Filtrar por talle si coincide
+        // 1. Filtrar por talle exacto si fue provisto
         let pool = candidates;
         if (targetTalle) {
-            const byTalle = pool.filter((c) => (c.talle || '').trim().toUpperCase() === targetTalle);
-            if (byTalle.length > 0) pool = byTalle;
+            const byTalle = pool.filter((c) => {
+                const ct = (c.talle || '').trim().toUpperCase();
+                return !ct || ct === 'U' || ct === targetTalle;
+            });
+            if (byTalle.length === 0) return null; // No adivinar un talle distinto
+            pool = byTalle;
         }
 
-        if (pool.length === 1) return pool[0];
-
-        // 2. Filtrar por variante explícita (e.g. B, N, G, BB, HG, PP)
+        // 2. Filtrar por variante explícita si fue provista
         if (targetVar) {
             const byVar = pool.filter((c) => {
                 const cv = (c.variante || '').trim().toUpperCase();
                 const codeParts = c.codigo.toUpperCase().split('_');
                 const lastPart = codeParts[codeParts.length - 1];
-                return cv === targetVar || lastPart === targetVar || lastPart.startsWith(targetVar);
+                return cv === targetVar || lastPart === targetVar || cv === 'U';
             });
-            if (byVar.length > 0) return byVar[0];
+            if (byVar.length === 1) return byVar[0];
+            if (byVar.length > 1) pool = byVar;
+            if (byVar.length === 0) return null; // No adivinar otra variante
         }
 
-        // 3. Filtrar por color de Susana (ej. "WHITE/BLACK", "BLANCO", "NEGRO", "BB", "PP", "HG", "GRIS")
+        if (pool.length === 1) return pool[0];
+
+        // 3. Desambiguar por el primer color principal del texto de Susana
         if (targetColor) {
             let colorKey = '';
-            if (
-                targetColor.includes('WHITE') ||
-                targetColor.includes('BLANCO') ||
-                targetColor === 'BB' ||
-                targetColor.includes('CON BLACK')
-            ) {
+            const firstToken = targetColor.split(/[\s/]+/)[0] || '';
+            if (firstToken === 'WHITE' || firstToken === 'BLANCO' || targetColor === 'BB') {
                 colorKey = 'B';
-            } else if (
-                targetColor.includes('BLACK') ||
-                targetColor.includes('NEGRO') ||
-                targetColor === 'PP' ||
-                targetColor.includes('CON WHITE')
-            ) {
+            } else if (firstToken === 'BLACK' || firstToken === 'NEGRO' || targetColor === 'PP') {
                 colorKey = 'N';
             } else if (
-                targetColor.includes('GRIS') ||
-                targetColor.includes('GREY') ||
+                firstToken === 'GRIS' ||
+                firstToken === 'GREY' ||
+                firstToken === 'MELANGE' ||
                 targetColor.includes('MELANGE') ||
                 targetColor === 'HG'
             ) {
@@ -1932,70 +2871,83 @@ export class OrdenesProduccionService implements OnModuleInit {
                 const byColor = pool.filter((c) => {
                     const cv = (c.variante || '').trim().toUpperCase();
                     const code = c.codigo.toUpperCase();
-                    if (
-                        colorKey === 'B' &&
-                        (cv.includes('B') ||
-                            code.endsWith('_B') ||
-                            code.endsWith('_BB') ||
-                            c.descripcion.toUpperCase().includes('BLANCO') ||
-                            c.descripcion.toUpperCase().includes('WHITE'))
-                    ) {
-                        return true;
-                    }
-                    if (
-                        colorKey === 'N' &&
-                        (cv.includes('N') ||
-                            code.endsWith('_N') ||
-                            code.endsWith('_PP') ||
-                            c.descripcion.toUpperCase().includes('NEGRO') ||
-                            c.descripcion.toUpperCase().includes('BLACK'))
-                    ) {
-                        return true;
-                    }
-                    if (
-                        colorKey === 'G' &&
-                        (cv.includes('G') ||
-                            code.endsWith('_G') ||
-                            code.endsWith('_HG') ||
-                            c.descripcion.toUpperCase().includes('GRIS') ||
-                            c.descripcion.toUpperCase().includes('GREY'))
-                    ) {
-                        return true;
-                    }
+                    if (colorKey === 'B' && (cv === 'B' || cv === 'BB' || code.endsWith('_B') || code.endsWith('_BB'))) return true;
+                    if (colorKey === 'N' && (cv === 'N' || cv === 'PP' || code.endsWith('_N') || code.endsWith('_PP'))) return true;
+                    if (colorKey === 'G' && (cv === 'G' || cv === 'M' || cv === 'HG' || code.endsWith('_G') || code.endsWith('_HG'))) return true;
                     return false;
                 });
                 if (byColor.length === 1) return byColor[0];
-                if (byColor.length > 1) pool = byColor;
             }
         }
 
-        if (pool.length === 1) return pool[0];
-
-        // 4. Scoring por coincidencia de descripción
-        if (targetDesc) {
-            let bestCandidate = pool[0];
-            let bestScore = -1;
-
-            for (const cand of pool) {
-                let score = this.descriptionSimilarity(cand.descripcion, targetDesc);
-                if (cand.estadoRevision === EstadoRevisionArticulo.CHEQUEADO) score += 0.5;
-                if (cand.bomRefs.length > 0) score += 0.5;
-
-                if (score > bestScore) {
-                    bestScore = score;
-                    bestCandidate = cand;
-                }
-            }
-            return bestCandidate;
-        }
-
-        return pool[0];
+        return null;
     }
 
     /**
-     * Resuelve el código crudo del PDF de Susana a nuestro artículo exacto de etapa TEJIDO (<MODELO>_<TALLE>_<VARIANTE>).
-     * Si Susana usa el código de producto terminado/pack o de costura, navega la estructura multinivel BOM
-     * para asociar la máquina al artículo real de tejeduría y sus consumos de hilado.
+     * Busca sugerencias de candidatos en la BD para mostrar arriba de todo cuando un artículo está SIN_MATCH
+     */
+    private findSuggestedCandidatesForUnmatched(
+        rawCode: string,
+        talleCol: string | undefined,
+        artByCode: Map<string, ArticuloCatalogItem>,
+        tejidoByModel: Map<string, ArticuloCatalogItem[]>,
+        allByModel: Map<string, ArticuloCatalogItem[]>,
+    ): {
+        id: string;
+        codigo: string;
+        descripcion: string;
+        modelo: string | null;
+        talle: string | null;
+        variante: string | null;
+        etapa: string | null;
+        tieneEstructura: boolean;
+    }[] {
+        const { code } = this.cleanArtCode(rawCode);
+        const model = code.split('_')[0].toUpperCase();
+        const vnNorm = model.startsWith('VN000') ? `VN${model.slice(5)}` : model;
+        const size = (talleCol || '').trim().toUpperCase();
+
+        const results: ArticuloCatalogItem[] = [];
+        for (const mName of [model, vnNorm]) {
+            if (!mName) continue;
+            const list = tejidoByModel.get(mName) || allByModel.get(mName) || [];
+            for (const item of list) {
+                if (!results.some((r) => r.id === item.id)) results.push(item);
+            }
+        }
+
+        if (results.length === 0 && model.length >= 4) {
+            const prefix = vnNorm.slice(0, 6);
+            for (const item of artByCode.values()) {
+                if (item.etapa === 'TEJIDO' && item.codigo.toUpperCase().startsWith(prefix)) {
+                    results.push(item);
+                    if (results.length >= 12) break;
+                }
+            }
+        }
+
+        results.sort((a, b) => {
+            const aSameSize = (a.talle || '').toUpperCase() === size ? 0 : 1;
+            const bSameSize = (b.talle || '').toUpperCase() === size ? 0 : 1;
+            if (aSameSize !== bSameSize) return aSameSize - bSameSize;
+            return a.codigo.localeCompare(b.codigo);
+        });
+
+        return results.slice(0, 12).map((a) => ({
+            id: a.id,
+            codigo: a.codigo,
+            descripcion: a.descripcion,
+            modelo: a.modelo || null,
+            talle: a.talle || null,
+            variante: a.variante || null,
+            etapa: a.etapa || null,
+            tieneEstructura: (a.bomRefs?.length || 0) > 0,
+        }));
+    }
+
+    /**
+     * Resuelve el código crudo del PDF de Susana a nuestro artículo exacto de etapa TEJIDO (<MODELO>_<TALLE>_<VARIANTE>)
+     * sin adivinar artículos de otro talle ni variante cuando no hay certeza.
      */
     private resolveTejidoArticle(
         rawCode: string,
@@ -2005,17 +2957,29 @@ export class OrdenesProduccionService implements OnModuleInit {
         artByCode: Map<string, ArticuloCatalogItem>,
         artBySusi: Map<string, ArticuloCatalogItem>,
         tejidoByModelSize: Map<string, ArticuloCatalogItem[]>,
-        tejidoByModel: Map<string, ArticuloCatalogItem[]>,
+        _tejidoByModel: Map<string, ArticuloCatalogItem[]>,
         allByModelSize: Map<string, ArticuloCatalogItem[]>,
-        allByModel: Map<string, ArticuloCatalogItem[]>,
+        _allByModel: Map<string, ArticuloCatalogItem[]>,
         bomByPadre: Map<string, { codigoComponente: string; cantidad: number; descripcionInsumo?: string }[]>,
+        customAliasMap?: Map<string, string>,
     ): ArticuloCatalogItem | null {
         if (!rawCode) return null;
         const rawUpper = rawCode.trim().toUpperCase().replace(/\s+/g, ' ');
-
-        // 1. Alias explícito de Susana (tabla histórica + mapa determinístico 100% de PDFs)
         const talleUpper = (talleCol || '').trim().toUpperCase();
         const colorUpper = (colorCol || '').trim().toUpperCase();
+
+        // 0. Alias personalizado guardado por el usuario en articulo_alias_susana
+        if (customAliasMap) {
+            const customTarget =
+                customAliasMap.get(`${rawUpper}__${talleUpper}__${colorUpper}`) ||
+                customAliasMap.get(`${rawUpper}__${talleUpper}`) ||
+                customAliasMap.get(rawUpper);
+            if (customTarget && artByCode.has(customTarget.toUpperCase())) {
+                return artByCode.get(customTarget.toUpperCase())!;
+            }
+        }
+
+        // 1. Alias explícito de Susana (diccionario verificado)
         const aliasTarget =
             SUSI_ALIAS_TO_TEJIDO[`${rawUpper}__${talleUpper}__${colorUpper}`] ||
             SUSI_ALIAS_TO_TEJIDO[`${rawUpper}__${talleUpper}`] ||
@@ -2029,40 +2993,10 @@ export class OrdenesProduccionService implements OnModuleInit {
                 const aliasArt = artByCode.get(aliasUpper)!;
                 if (aliasArt.etapa === 'TEJIDO') return aliasArt;
                 const desc = this.findTejidoDescendants(aliasArt.codigo, artByCode, bomByPadre);
-                if (desc.length > 0) return this.selectBestTejidoCandidate(desc, talleCol, colorCol, descCol);
+                if (desc.length === 1) return desc[0];
+                if (desc.length > 1) return this.selectBestTejidoCandidate(desc, talleCol, colorCol, descCol) || aliasArt;
                 return aliasArt;
             }
-
-            // Si está en el diccionario pero aún no fue cargado en memoria de articulos:
-            const rawBoms = this.getLeafBom(aliasUpper, bomByPadre as any);
-            const bomRefs = rawBoms.map((b) => ({
-                codigoComponente: b.codigoComponente,
-                descripcionComponente: b.descripcionInsumo || b.codigoComponente,
-                cantidadKgPorDocena: b.cantidad,
-                item: undefined,
-                rol: 'HILADO',
-            }));
-
-            const parts = aliasUpper.split('_');
-            const synthesized: ArticuloCatalogItem = {
-                id: aliasUpper,
-                codigo: aliasUpper,
-                descripcion: `MEDIA TEJIDA ${aliasUpper}`,
-                marca: this.inferMarca(descCol, rawUpper),
-                modelo: parts[0] || rawUpper,
-                talle: parts[1] || talleCol || '',
-                variante: parts[2] || '',
-                etapa: 'TEJIDO',
-                familia: null,
-                codigoSusi: rawUpper,
-                estado: 'CHEQUEADO',
-                estadoRevision: EstadoRevisionArticulo.CHEQUEADO,
-                cycleTimeByMachineType: new Map(),
-                defaultCycleTimeSeconds: 95,
-                bomRefs: bomRefs as any,
-            };
-            artByCode.set(aliasUpper, synthesized);
-            return synthesized;
         }
 
         // 2. Coincidencia directa por columna codigoSusi
@@ -2070,7 +3004,8 @@ export class OrdenesProduccionService implements OnModuleInit {
             const susiArt = artBySusi.get(rawUpper)!;
             if (susiArt.etapa === 'TEJIDO') return susiArt;
             const desc = this.findTejidoDescendants(susiArt.codigo, artByCode, bomByPadre);
-            if (desc.length > 0) return this.selectBestTejidoCandidate(desc, talleCol, colorCol, descCol);
+            if (desc.length === 1) return desc[0];
+            if (desc.length > 1) return this.selectBestTejidoCandidate(desc, talleCol, colorCol, descCol) || susiArt;
             return susiArt;
         }
 
@@ -2079,7 +3014,8 @@ export class OrdenesProduccionService implements OnModuleInit {
             const exactArt = artByCode.get(rawUpper)!;
             if (exactArt.etapa === 'TEJIDO') return exactArt;
             const desc = this.findTejidoDescendants(exactArt.codigo, artByCode, bomByPadre);
-            if (desc.length > 0) return this.selectBestTejidoCandidate(desc, talleCol, colorCol, descCol);
+            if (desc.length === 1) return desc[0];
+            if (desc.length > 1) return this.selectBestTejidoCandidate(desc, talleCol, colorCol, descCol) || exactArt;
             return exactArt;
         }
 
@@ -2089,11 +3025,12 @@ export class OrdenesProduccionService implements OnModuleInit {
             const underArt = artByCode.get(underScoreCode)!;
             if (underArt.etapa === 'TEJIDO') return underArt;
             const desc = this.findTejidoDescendants(underArt.codigo, artByCode, bomByPadre);
-            if (desc.length > 0) return this.selectBestTejidoCandidate(desc, talleCol, colorCol, descCol);
+            if (desc.length === 1) return desc[0];
+            if (desc.length > 1) return this.selectBestTejidoCandidate(desc, talleCol, colorCol, descCol) || underArt;
             return underArt;
         }
 
-        // 5. Normalización y separación por componentes (Modelo, Talle, Variante)
+        // 5. Normalización estricta por Modelo + Talle + Variante
         const sizeNormMap: Record<string, string> = { LG: 'L', MD: 'M', SM: 'S', KXK: 'KXL' };
         const validSizes = [
             'XS',
@@ -2115,7 +3052,7 @@ export class OrdenesProduccionService implements OnModuleInit {
             '5',
         ];
 
-        let talle = (talleCol || '').trim().toUpperCase();
+        let talle = (talleCol || '').trim().toUpperCase().split(/\s+/)[0] || '';
         talle = sizeNormMap[talle] || talle;
         const color = (colorCol || '').trim().toUpperCase();
 
@@ -2126,7 +3063,6 @@ export class OrdenesProduccionService implements OnModuleInit {
         let size = talle;
         let varHint = '';
 
-        // Patrón Under Armour: "6009617 100 M" o "6009617-100" o "6009617 M B"
         if (tokens.length >= 2 && /^\d{7}$/.test(tokens[0]) && /^\d{3}$/.test(tokens[1])) {
             model = `${tokens[0]}-${tokens[1]}`;
             if (tokens.length >= 3) {
@@ -2166,20 +3102,12 @@ export class OrdenesProduccionService implements OnModuleInit {
             }
         }
 
-        if (!size && talle) {
-            size = talle;
-        }
+        if (!size && talle) size = talle;
+        if (varHint === 'M' && color.includes('MELANGE')) varHint = 'G';
 
-        if (!varHint && color) {
-            if (color.includes('WHITE') || color.includes('BLANCO') || color === 'BB') varHint = 'B';
-            else if (color.includes('BLACK') || color.includes('NEGRO') || color === 'PP') varHint = 'N';
-            else if (color.includes('GRIS') || color.includes('GREY') || color.includes('MELANGE') || color === 'HG') varHint = 'G';
-        }
-
-        // Normalización Vans: VN000XRZZ95YCASA -> VNXRZZ95YCASA
         const vnNorm = model.startsWith('VN000') ? `VN${model.slice(5)}` : model;
 
-        // 5b. Si tenemos modelo, talle y variante: probar construcción directa `${model}_${size}_${varHint}`
+        // 5b. Construcción directa `${model}_${size}_${varHint}`
         if (model && size && varHint) {
             for (const mName of [model, vnNorm]) {
                 const directKey = `${mName}_${size}_${varHint}`.toUpperCase();
@@ -2187,42 +3115,14 @@ export class OrdenesProduccionService implements OnModuleInit {
                     const directArt = artByCode.get(directKey)!;
                     if (directArt.etapa === 'TEJIDO') return directArt;
                     const desc = this.findTejidoDescendants(directArt.codigo, artByCode, bomByPadre);
-                    if (desc.length > 0) return this.selectBestTejidoCandidate(desc, size, color, descCol, varHint);
+                    if (desc.length === 1) return desc[0];
+                    if (desc.length > 1) return this.selectBestTejidoCandidate(desc, size, color, descCol, varHint);
                     return directArt;
                 }
             }
         }
 
-        // 5c. Búsqueda por coincidencia de prefijo de código `${model}_${size}_` en artByCode (ej. SX4705-101-L -> SX4705-101_L_B)
-        if (model && size) {
-            for (const mName of [model, vnNorm]) {
-                const codePrefix = `${mName}_${size}_`.toUpperCase();
-                const matchingByCode: ArticuloCatalogItem[] = [];
-                for (const [cUpper, cArt] of artByCode.entries()) {
-                    if (cUpper.startsWith(codePrefix) || (cArt.modelo?.toUpperCase() === mName && (cArt.talle?.toUpperCase() === size || cArt.talle === size))) {
-                        matchingByCode.push(cArt);
-                    }
-                }
-                if (matchingByCode.length > 0) {
-                    const tejidoOnly = matchingByCode.filter((a) => a.etapa === 'TEJIDO');
-                    if (tejidoOnly.length > 0) {
-                        return this.selectBestTejidoCandidate(tejidoOnly, size, color, descCol, varHint);
-                    }
-                    const descendants: ArticuloCatalogItem[] = [];
-                    for (const mc of matchingByCode) {
-                        const desc = this.findTejidoDescendants(mc.codigo, artByCode, bomByPadre);
-                        for (const d of desc) {
-                            if (!descendants.some((td) => td.id === d.id)) descendants.push(d);
-                        }
-                    }
-                    if (descendants.length > 0) {
-                        return this.selectBestTejidoCandidate(descendants, size, color, descCol, varHint);
-                    }
-                }
-            }
-        }
-
-        // 6. Buscar en tejidoByModelSize (prioridad 1: artículos directos de TEJIDO)
+        // 6. Buscar en tejidoByModelSize (mismo Modelo y mismo Talle)
         let candidates = tejidoByModelSize.get(`${model}__${size}`) || [];
         if (candidates.length === 0 && vnNorm !== model) {
             candidates = tejidoByModelSize.get(`${vnNorm}__${size}`) || [];
@@ -2231,52 +3131,15 @@ export class OrdenesProduccionService implements OnModuleInit {
             return this.selectBestTejidoCandidate(candidates, size, color, descCol, varHint);
         }
 
-        // 7. Buscar en allByModelSize (prioridad 2: artículos de TERMINADO/PACK o COSTURA y descender por BOM a TEJIDO)
-        const packCandidates = allByModelSize.get(`${model}__${size}`) || (vnNorm !== model ? allByModelSize.get(`${vnNorm}__${size}`) : []) || [];
+        // 7. Buscar en allByModelSize (mismo Modelo y mismo Talle) y descender por BOM a TEJIDO
+        const packCandidates =
+            allByModelSize.get(`${model}__${size}`) ||
+            (vnNorm !== model ? allByModelSize.get(`${vnNorm}__${size}`) : []) ||
+            [];
         if (packCandidates.length > 0) {
             const tejidoDescendants: ArticuloCatalogItem[] = [];
             for (const pc of packCandidates) {
                 const desc = this.findTejidoDescendants(pc.codigo, artByCode, bomByPadre);
-                for (const d of desc) {
-                    if (!tejidoDescendants.some((td) => td.id === d.id)) tejidoDescendants.push(d);
-                }
-            }
-            if (tejidoDescendants.length > 0) {
-                return this.selectBestTejidoCandidate(tejidoDescendants, size, color, descCol, varHint);
-            }
-        }
-
-        // 8. Búsqueda por prefijo de modelo en TEJIDO
-        const prefixTejido: ArticuloCatalogItem[] = [];
-        for (const [key, items] of tejidoByModelSize.entries()) {
-            const [cMod, cSz] = key.split('__');
-            if (cSz === size && (cMod.startsWith(model) || model.startsWith(cMod) || cMod.startsWith(vnNorm) || vnNorm.startsWith(cMod))) {
-                prefixTejido.push(...items);
-            }
-        }
-        if (prefixTejido.length > 0) {
-            return this.selectBestTejidoCandidate(prefixTejido, size, color, descCol, varHint);
-        }
-
-        // 9. Búsqueda por modelo general en TEJIDO
-        candidates = tejidoByModel.get(model) || (vnNorm !== model ? tejidoByModel.get(vnNorm) : []) || [];
-        if (candidates.length === 0) {
-            for (const [cMod, items] of tejidoByModel.entries()) {
-                if (cMod.startsWith(model) || model.startsWith(cMod) || cMod.startsWith(vnNorm) || vnNorm.startsWith(cMod)) {
-                    candidates.push(...items);
-                }
-            }
-        }
-        if (candidates.length > 0) {
-            return this.selectBestTejidoCandidate(candidates, size, color, descCol, varHint);
-        }
-
-        // 10. Búsqueda por modelo general en ALL y descender por BOM a TEJIDO
-        const allCandidates = allByModel.get(model) || (vnNorm !== model ? allByModel.get(vnNorm) : []) || [];
-        if (allCandidates.length > 0) {
-            const tejidoDescendants: ArticuloCatalogItem[] = [];
-            for (const ac of allCandidates) {
-                const desc = this.findTejidoDescendants(ac.codigo, artByCode, bomByPadre);
                 for (const d of desc) {
                     if (!tejidoDescendants.some((td) => td.id === d.id)) tejidoDescendants.push(d);
                 }

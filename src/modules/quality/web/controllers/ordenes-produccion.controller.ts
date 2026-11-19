@@ -41,6 +41,9 @@ export class OrdenesProduccionController {
     )
     async parseOrdenes(
         @UploadedFiles() files: Array<Express.Multer.File>,
+        @Body('plantaId') plantaId?: string,
+        @Body('sector') sector?: string,
+        @Body('fechaFiltro') fechaFiltro?: string,
     ): Promise<ProduccionParseResult> {
         if (!files || files.length === 0) {
             throw new BadRequestException('Debes subir al menos un archivo PDF de orden de producción.');
@@ -51,22 +54,78 @@ export class OrdenesProduccionController {
             originalname: f.originalname,
         }));
 
-        return this.service.parseOrdenesFromBuffers(filesData);
+        return this.service.parseOrdenesFromBuffers(filesData, {
+            plantaId,
+            sector,
+            fechaFiltro,
+        });
     }
 
     @Get('ultima')
-    async getUltimaPlanilla(): Promise<ProduccionParseResult | null> {
-        return this.service.getUltimaPlanilla();
+    async getUltimaPlanilla(
+        @Query('plantaId') plantaId?: string,
+        @Query('sector') sector?: string,
+    ): Promise<ProduccionParseResult | null> {
+        return this.service.getUltimaPlanilla(plantaId, sector);
     }
 
     @Post('recalcular')
-    async recalcularUltimaPlanilla(): Promise<ProduccionParseResult | null> {
-        return this.service.recalcularPlanilla();
+    async recalcularUltimaPlanilla(
+        @Body('plantaId') plantaId?: string,
+        @Body('sector') sector?: string,
+    ): Promise<ProduccionParseResult | null> {
+        return this.service.recalcularPlanilla(undefined, plantaId, sector);
     }
 
     @Post('planillas/:id/recalcular')
-    async recalcularPlanilla(@Param('id') id: string): Promise<ProduccionParseResult | null> {
-        return this.service.recalcularPlanilla(id);
+    async recalcularPlanilla(
+        @Param('id') id: string,
+        @Body('plantaId') plantaId?: string,
+        @Body('sector') sector?: string,
+    ): Promise<ProduccionParseResult | null> {
+        return this.service.recalcularPlanilla(id, plantaId, sector);
+    }
+
+    @Post('vincular-susi')
+    async vincularCodigoSusana(
+        @Body()
+        dto: {
+            codigoSusana: string;
+            articuloId: string;
+            planillaId?: string;
+            plantaId?: string;
+            sector?: string;
+        },
+    ): Promise<ProduccionParseResult | null> {
+        try {
+            return await this.service.vincularCodigoSusana(dto);
+        } catch (err: any) {
+            throw new BadRequestException(err.message || 'No se pudo vincular el código de Susana.');
+        }
+    }
+
+    @Patch('cambio-hora')
+    async actualizarHoraCambio(
+        @Body()
+        dto: {
+            fecha: string;
+            maquina: number;
+            turno: string;
+            hora: string;
+            planillaId?: string;
+            plantaId?: string;
+            sector?: string;
+        },
+    ): Promise<ProduccionParseResult | null> {
+        return this.service.actualizarHoraCambio(dto);
+    }
+
+    @Get('catalogo-matcheo')
+    async getCatalogoParaMatcheo(
+        @Query('search') search?: string,
+        @Query('etapa') etapa?: string,
+    ) {
+        return this.service.getCatalogoParaMatcheo(search, etapa);
     }
 
     @Get('planillas')
