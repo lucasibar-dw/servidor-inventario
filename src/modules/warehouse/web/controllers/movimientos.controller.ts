@@ -13,13 +13,33 @@ export class MovimientosController {
     @Get()
     getAll(
         @Query('depositoId') depositoId?: string,
+        @Query('posicionId') posicionId?: string,
         @Query('itemId') itemId?: string,
         @Query('lotNumber') lotNumber?: string,
         @Query('tipo') tipo?: TipoMovimiento,
+        @Query('status') status?: string,
+        @Query('userId') userId?: string,
+        @Query('documentoNumero') documentoNumero?: string,
+        @Query('q') q?: string,
         @Query('desde') desde?: string,
         @Query('hasta') hasta?: string,
+        @Query('limit') limit?: string,
     ) {
-        return this.movimientosService.findAll({ depositoId, itemId, lotNumber, tipo, desde, hasta });
+        const parsedLimit = limit ? parseInt(limit, 10) : undefined;
+        return this.movimientosService.findAll({
+            depositoId,
+            posicionId,
+            itemId,
+            lotNumber,
+            tipo,
+            status,
+            userId,
+            documentoNumero,
+            q,
+            desde,
+            hasta,
+            limit: parsedLimit && !isNaN(parsedLimit) ? parsedLimit : undefined,
+        });
     }
 
     @Post(':id/cancel')

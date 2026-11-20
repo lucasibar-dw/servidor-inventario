@@ -132,9 +132,14 @@ export class MovimientosService {
 
     async findAll(filters: {
         depositoId?: string;
+        posicionId?: string;
         itemId?: string;
         lotNumber?: string;
         tipo?: TipoMovimiento;
+        status?: string;
+        userId?: string;
+        documentoNumero?: string;
+        q?: string;
         desde?: string;
         hasta?: string;
         limit?: number;
@@ -155,9 +160,26 @@ export class MovimientosService {
             .addOrderBy('m.createdAt', 'DESC');
 
         if (filters.depositoId) qb = qb.andWhere('posicion.depositoId = :depositoId', { depositoId: filters.depositoId });
+        if (filters.posicionId) qb = qb.andWhere('m.posicionId = :posicionId', { posicionId: filters.posicionId });
         if (filters.itemId) qb = qb.andWhere('m.itemId = :itemId', { itemId: filters.itemId });
-        if (filters.lotNumber) qb = qb.andWhere('batch.lotNumber LIKE :lotNumber', { lotNumber: `%${filters.lotNumber}%` });
+        if (filters.lotNumber) qb = qb.andWhere('batch.lotNumber ILIKE :lotNumber', { lotNumber: `%${filters.lotNumber}%` });
         if (filters.tipo) qb = qb.andWhere('m.tipo = :tipo', { tipo: filters.tipo });
+        if (filters.status) qb = qb.andWhere('m.status = :status', { status: filters.status });
+        if (filters.userId) qb = qb.andWhere('m.userId = :userId', { userId: filters.userId });
+        if (filters.documentoNumero) {
+            qb = qb.andWhere('(m.documentoNumero ILIKE :docNum OR documento.numero ILIKE :docNum)', {
+                docNum: `%${filters.documentoNumero}%`,
+            });
+        }
+        if (filters.q) {
+            const tokens = filters.q.trim().split(/\s+/).filter(Boolean);
+            tokens.forEach((token, idx) => {
+                qb = qb.andWhere(
+                    `(item.descripcion ILIKE :q${idx} OR item.codigoInterno ILIKE :q${idx} OR batch.lotNumber ILIKE :q${idx} OR posicion.codigo ILIKE :q${idx} OR m.documentoNumero ILIKE :q${idx} OR documento.numero ILIKE :q${idx} OR m.observaciones ILIKE :q${idx} OR user.username ILIKE :q${idx} OR partner.name ILIKE :q${idx} OR supplier.name ILIKE :q${idx})`,
+                    { [`q${idx}`]: `%${token}%` },
+                );
+            });
+        }
         if (filters.desde) qb = qb.andWhere('m.fecha >= :desde', { desde: filters.desde });
         if (filters.hasta) qb = qb.andWhere('m.fecha <= :hasta', { hasta: filters.hasta });
         if (filters.limit) qb = qb.limit(filters.limit);
