@@ -2221,7 +2221,7 @@ export class OrdenesProduccionService implements OnModuleInit {
                         pesoConoEsEstimado: coneInfo.esEstimado,
                         motivoPesoCono: coneInfo.motivoPesoCono,
                         conos: 0,
-                        stockTotalKg,
+                        stockTotalKg: totalStockKg,
                         stockPickingKg: pickingKg,
                         stockReservaKg: reservaKg,
                         posicionesPicking: Array.from(suggestedPicking),
